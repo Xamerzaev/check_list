@@ -179,7 +179,7 @@ async def update_end_date(user_id, days):
         await db.commit()
 
 
-async def create_new_room(user_id):  # todo если уже есть такой room_id сгенерировать другой
+async def create_new_room(user_id):
     room_id = secrets.randbelow(10 ** 6)
 
     async with aiosqlite.connect('users.db') as db:
