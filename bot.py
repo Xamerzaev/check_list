@@ -549,8 +549,7 @@ async def send_profile_for_moderation(profile, moderator_id, bot) -> None:
               f"Организация: {organization}\n" \
               f"Местоположение: {location}\n\n" \
 
-    await bot.send_media_group(moderator_id, caption=caption)
-    await bot.send_message(moderator_id, text='Выберите действие:',
+    await bot.send_message(moderator_id, text=caption,
                            reply_markup=get_inline_keyboard(user_id))
 
 

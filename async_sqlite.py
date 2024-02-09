@@ -96,7 +96,6 @@ async def edit_profile(state, user_id):
             WHERE user_id = ?""", (
                 data['name'],
                 data['phone'],
-                data['passport'],
                 data['organization'],
                 data['location'],
                 user_id
@@ -192,8 +191,8 @@ async def create_new_room(user_id):
 
             if not room:
                 await db.execute("""
-                INSERT INTO profile (room_id, user_id)
-                VALUES (?, ?,)
+                INSERT INTO room (room_id, creator_user_id)
+                VALUES (?, ?)
                 """, (room_id, user_id))
                 await db.commit()
                 logger.info(f"Room created for user_id: {user_id}")
