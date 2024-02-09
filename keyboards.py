@@ -103,14 +103,14 @@ def get_room_employee_kb() -> ReplyKeyboardMarkup:
     return kb
 
 
-def get_join_room_request_kb(user_id, room_id) -> InlineKeyboardMarkup:
+def get_join_room_request_kb(user_id, room_id, employee_name) -> InlineKeyboardMarkup:
     approve_button = InlineKeyboardButton(
         text="Одобрить",
-        callback_data=f"join_room:approve:{user_id}:{room_id}"
+        callback_data=f"join_room:approve:{user_id}:{room_id}:{employee_name}"
     )
     reject_button = InlineKeyboardButton(
         text="Отклонить",
-        callback_data=f"join_room:reject:{user_id}:{room_id}"
+        callback_data=f"join_room:reject:{user_id}:{room_id}:{employee_name}"
     )
     kb = InlineKeyboardMarkup().add(approve_button, reject_button)
 
@@ -121,8 +121,8 @@ def get_employees_kb(employees, room_id):
     kb = InlineKeyboardMarkup()
     for employee in employees:
         kb.add(InlineKeyboardButton(
-            employee[0],
-            callback_data=f"checklist:{employee[0]}:{room_id}"))
+            employee[1],
+            callback_data=f"checklist:{employee[0]}:{room_id}:{employee[1]}"))
 
     return kb
 

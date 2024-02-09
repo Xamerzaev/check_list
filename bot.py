@@ -26,7 +26,7 @@ from async_sqlite import (db_start, create_profile, edit_profile,
                           add_task, delete_task, get_admin_activity,
                           set_admin_activity, set_employee_activity,
                           get_employee_activity, get_room_id_by_employee_id,
-                          change_room_task_status, get_monthly_report)
+                          change_room_task_status, get_monthly_report, get_current_end_date)
 from keyboards import (get_keyboard, get_cancel_keyboard,
                        get_done_keyboard, get_inline_keyboard,
                        get_pay_kb, get_room_admin_kb, get_join_room_request_kb, get_room_employee_kb, get_employees_kb,
@@ -57,6 +57,7 @@ async def on_startup(_):
 class RoomStates(StatesGroup):
     EnterRoomCode = State()
     InputTask = State()
+    EnterEmployeeName = State()
 
 
 class ProfileStateGroup(StatesGroup):
@@ -197,28 +198,46 @@ async def load_room_id(message: types.Message, state: FSMContext):
             await set_admin_activity(user_id, 1)
             await message.reply("Вы успешно вошли в комнату как владелец!",
                                 reply_markup=get_room_admin_kb())
+            await state.finish()
         else:
             if await check_employee_in_room(room_id, user_id):
                 await set_employee_activity(user_id, 1)
                 await message.reply("Вы успешно вошли в комнату как сотрудник!",
                                     reply_markup=get_room_employee_kb())
+                await state.finish()
             else:
+                await RoomStates.EnterEmployeeName.set()
+                await message.reply("Введите ваше имя:", reply_markup=get_cancel_keyboard())
                 owner_id = room_and_owner[1]
-                await send_request_entry_to_room(user_id, owner_id, room_id, bot)
-                await message.reply("Ваша заявка отправлена на расмотрения владельцу комнаты!")
-        await state.finish()
+                await state.update_data(user_id=user_id, owner_id=owner_id, room_id=room_id)
     else:
         await message.reply("Комната с таким id не существует!")
 
 
-async def send_request_entry_to_room(user_id, owner_id, room_id, bot) -> None:
+@dp.message_handler(state=RoomStates.EnterEmployeeName)
+async def process_employee_name(message: types.Message, state: FSMContext):
+    """
+    Обработчик ввода имени сотрудника
+    """
+    employee_name = message.text.strip()
+    data = await state.get_data()
+    room_id = data.get('room_id')
+    user_id = data.get('user_id')
+    owner_id = data.get('owner_id')
+
+    await send_request_entry_to_room(user_id, employee_name, owner_id, room_id, bot)
+    await message.reply("Ваша заявка отправлена на рассмотрение владельцу комнаты!")
+    await state.finish()
+
+
+async def send_request_entry_to_room(user_id, employee_name, owner_id, room_id, bot) -> None:
     """
     Отпавляет запрос владельцу на присоединение в комнату
     """
     await bot.send_message(
         owner_id,
-        text=f'Пользователь: {user_id} хочет присоединиться в вашу комнату',
-        reply_markup=get_join_room_request_kb(user_id, room_id)
+        text=f'Пользователь: {employee_name} хочет присоединиться в вашу комнату',
+        reply_markup=get_join_room_request_kb(user_id, room_id, employee_name)
     )
 
 
@@ -230,18 +249,20 @@ async def join_room_response_callback(query: types.CallbackQuery) -> None:
     employee_id = query.data.split(':')[2]
     result = query.data.split(':')[1]
     room_id = query.data.split(':')[3]
+    employee_name = query.data.split(':')[4]
 
     if result == 'approve':
-        await add_employee_in_room(employee_id, room_id)
+        await add_employee_in_room(employee_id, room_id, employee_name)
         await bot.edit_message_text(
             chat_id=query.message.chat.id,
             message_id=query.message.message_id,
             text="✅ Заявка одобрена"
         )
+        await set_employee_activity(employee_id, 1)
         await bot.send_message(
             employee_id,
-            text='Ваша заявка одобрена\nВойдите в комнату',
-            reply_markup=get_keyboard()
+            text='Ваша заявка одобрена\nВы вошли в комнату как сотрудник!',
+            reply_markup=get_room_employee_kb()
         )
 
     elif result == 'reject':
@@ -273,6 +294,20 @@ async def cmd_my_employees(message: types.Message) -> None:
         else:
             await bot.send_message(message.from_user.id,
                                    text="У вас нет сотрудников")
+
+
+@dp.message_handler(lambda message: message.text == "Моя подписка")
+async def cmd_my_employees(message: types.Message) -> None:
+    """
+    Обработчик кнопки `Моя подписка`
+    """
+    user_id = message.from_user.id
+    admin_status = await get_admin_activity(user_id)
+    if admin_status:
+        end_date = await get_current_end_date(user_id)
+        await bot.send_message(
+            user_id,
+            text=f"Ваша подписка закончится: {end_date}")
 
 
 @dp.message_handler(lambda message: message.text == "Чек-лист")
@@ -334,12 +369,13 @@ async def employee_checklist_for_admin_callback_handler(query: types.CallbackQue
     """
     user_id = query.data.split(':')[1]
     room_id = query.data.split(':')[2]
+    employee_name = query.data.split(':')[3]
     checklist_for_user = await get_checklist_for_user(user_id)
 
     await bot.edit_message_text(
         chat_id=query.message.chat.id,
         message_id=query.message.message_id,
-        text=f"Чек-лист для {user_id}",
+        text=f"Чек-лист для {employee_name}",
         reply_markup=get_employee_checklist_for_admin_kb(checklist_for_user, room_id, user_id)
     )
 
@@ -403,8 +439,9 @@ async def process_input_task(message: types.Message, state: FSMContext) -> None:
     room_id = data.get('room_id')
 
     if task_for == 'room':
-        await bot.send_message(message.chat.id, "Дело добавлено!", reply_markup=get_room_admin_kb())
         await add_task(room_id, task_for, task_description)
+        await bot.send_message(message.chat.id, "Дело добавлено!", reply_markup=get_room_admin_kb())
+        await send_task_notification(room_id, task_description, task_for)
         checklist_for_room = await get_checklist_for_room(room_id)
         await bot.send_message(chat_id=message.chat.id,
                                text="Общий Чек-лист",
@@ -415,11 +452,21 @@ async def process_input_task(message: types.Message, state: FSMContext) -> None:
         await add_task(room_id, task_for, task_description, user_id)
         checklist_for_room = await get_checklist_for_user(user_id)
         await bot.send_message(message.chat.id, "Дело добавлено!", reply_markup=get_room_admin_kb())
+        await send_task_notification(room_id, task_description, task_for, user_id)
         await bot.send_message(chat_id=message.chat.id,
                                text=f"Чек-лист для {user_id}",
                                reply_markup=get_employee_checklist_for_admin_kb(checklist_for_room, room_id, user_id))
 
     await state.finish()
+
+
+async def send_task_notification(room_id, task_description, task_for, user_id=None):
+    if task_for == 'room':
+        employees = await get_employees(room_id)
+        for employee_id in employees:
+            await bot.send_message(employee_id[0], f"Добавлено новое дело в комнату: {task_description}")
+    elif task_for == 'user' and user_id:
+        await bot.send_message(user_id, f"Добавлено новое дело для вас: {task_description}")
 
 
 @dp.callback_query_handler(text_contains='delete_task')
@@ -682,7 +729,13 @@ async def handle_successful_payment(message: Message):
 
     # функция добавления пользователя в группу
     # await add_user_to_group(message.from_user.id, GROUP_ID)
-    await message.answer(f"Спасибо за ваш платеж! \n Создаем комнату для вас.")
+
+    room_id = await get_room_id(user_id)
+    await set_admin_activity(user_id, 1)
+    await message.answer(
+        text=f"Ваша комната успешно создана!\nИдентификатор комнаты: {room_id}\nСохраните его в надежном месте.",
+        reply_markup=get_room_admin_kb()
+    )
 
 
 # async def create_new_room(message: types.Message) -> str:

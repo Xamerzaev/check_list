@@ -179,25 +179,20 @@ async def update_end_date(user_id, days):
 
 
 async def create_new_room(user_id):
-    room_id = secrets.randbelow(10 ** 6)
-
     async with aiosqlite.connect('users.db') as db:
         try:
-            room = await db.execute("""
-            SELECT 1 FROM room 
-            WHERE room_id = ?
-            """, (room_id,))
-            room = await room.fetchone()
-
-            if not room:
-                await db.execute("""
-                INSERT INTO room (room_id, creator_user_id)
-                VALUES (?, ?)
-                """, (room_id, user_id))
-                await db.commit()
-                logger.info(f"Room created for user_id: {user_id}")
-            else:
-                logger.info("Room with such ID already exists")
+            new_room_id = secrets.randbelow(10 ** 6)
+            existing_room = await get_room_id(user_id)
+            if not existing_room:
+                if new_room_id != existing_room:
+                    await db.execute("""
+                    INSERT INTO room (room_id, creator_user_id)
+                    VALUES (?, ?)
+                    """, (new_room_id, user_id))
+                    await db.commit()
+                    logger.info(f"Room created for user_id: {user_id}")
+                else:
+                    logger.info("Room with such ID already exists")
         except Exception as e:
             logger.error(f"Error creating room for user_id {user_id}: {e}")
 
@@ -218,8 +213,8 @@ async def get_room_id(user_id):
             SELECT room_id FROM room
             WHERE creator_user_id = ?
         """, (user_id,))
-        owner_id = await result.fetchone()
-        return owner_id[0] if owner_id else None
+        room_id = await result.fetchone()
+        return room_id[0] if room_id else None
 
 
 async def check_employee_in_room(room_id, user_id):
@@ -242,13 +237,13 @@ async def get_employees(room_id):
         return employees
 
 
-async def add_employee_in_room(employee_id, room_id):
+async def add_employee_in_room(employee_id, room_id, employee_name):
     async with aiosqlite.connect('users.db') as db:
         try:
             await db.execute("""
             INSERT INTO employee (employee_id, employee_first_name, employee_last_name, room_id)
-            VALUES (?, '', '',  ?)""",
-                             (employee_id, room_id))
+            VALUES (?, ?, '',  ?)""",
+                             (employee_id, employee_name, room_id))
             await db.commit()
             logger.info(f"employee {employee_id} added in room: {room_id}")
         except Exception as e:
