@@ -20,17 +20,18 @@ from async_sqlite import (db_start, create_profile, edit_profile,
                           get_status, update_profile_status_payment,
                           update_subscribe_period, update_end_date,
                           get_all_subscribers, create_new_room,
-                          check_room_exists, check_employee_in_room,
+                          get_room_by_id, check_employee_in_room,
                           add_employee_in_room, get_room_id, get_employees,
                           get_checklist_for_user, get_checklist_for_room,
                           add_task, delete_task, get_admin_activity,
                           set_admin_activity, set_employee_activity,
                           get_employee_activity, get_room_id_by_employee_id,
-                          change_room_task_status, get_monthly_report, get_current_end_date)
+                          change_room_task_status, get_monthly_report,
+                          get_current_end_date, remove_employee, get_room_task_status)
 from keyboards import (get_keyboard, get_cancel_keyboard,
                        get_done_keyboard, get_inline_keyboard,
                        get_pay_kb, get_room_admin_kb, get_join_room_request_kb, get_room_employee_kb, get_employees_kb,
-                       get_employee_checklist_for_admin_kb, get_room_checklist_for_admin_kb, get_task_cancel_kb,
+                       get_employee_checklist_for_admin_kb, get_room_checklist_for_admin_kb,
                        get_room_checklist_for_employee_kb, get_my_checklist_for_employee_kb)
 
 load_dotenv()
@@ -58,6 +59,8 @@ class RoomStates(StatesGroup):
     EnterRoomCode = State()
     InputTask = State()
     EnterEmployeeName = State()
+    DeleteEmployeeConfirmForAdmin = State()
+    ExitEmployee = State()
 
 
 class ProfileStateGroup(StatesGroup):
@@ -72,28 +75,24 @@ async def cmd_cancel(message: types.Message, state: FSMContext):
     """
     Обрабатывает команду "Отмена"
     """
-    if state is None:
-        return
+    current_state = await state.get_state()
 
-    await state.finish()
-    await message.reply('Отмена произведена! Можете начать заново.',
-                        reply_markup=get_keyboard())
+    if current_state in ['RoomStates:InputTask', 'RoomStates:DeleteEmployeeConfirmForAdmin']:
+        await state.finish()
+        await message.reply('Отмена произведена!', reply_markup=get_room_admin_kb())
 
-
-@dp.message_handler(lambda message: message.text == "Не вводить новое дело!", state=RoomStates.InputTask)
-async def cmd_task_cancel(message: types.Message, state: FSMContext):
-    """
-    Обрабатывает команду "Не вводить новое дело"
-    """
-    await state.finish()
-    await message.reply('Отмена произведена!',
-                        reply_markup=get_room_admin_kb())
+    elif current_state in ['RoomStates:ExitEmployee']:
+        await state.finish()
+        await message.reply('Отмена произведена!', reply_markup=get_room_employee_kb())
+    else:
+        await state.finish()
+        await message.reply('Отмена произведена! Можете начать заново.', reply_markup=get_keyboard())
 
 
 @dp.message_handler(lambda message: message.text == "Выход")
-async def cmd_cancel(message: types.Message):
+async def cmd_cancel(message: types.Message, state: FSMContext):
     """
-    Обрабатывает команду "Выход"
+    Обрабатывает команду "Выход с комнаты"
     """
     user_id = message.from_user.id
     admin_status = await get_admin_activity(user_id)
@@ -105,9 +104,17 @@ async def cmd_cancel(message: types.Message):
                             reply_markup=get_keyboard())
 
     elif employee_status:
-        await set_employee_activity(user_id, 0)
-        await message.reply('Вы вышли из комнаты!',
-                            reply_markup=get_keyboard())
+        room_id = await get_room_id_by_employee_id(user_id)
+        if room_id:
+            await RoomStates.ExitEmployee.set()
+            await state.update_data(
+                employee_id=user_id,
+                room_id=room_id
+                )
+            await message.reply(
+                text=f"Вы действительно хотите покинуть комнату {room_id}?\n"
+                     "Для подтверждения напишите слово 'Покинуть'",
+                reply_markup=get_cancel_keyboard())
 
 
 @dp.message_handler(commands=['start'])
@@ -192,9 +199,9 @@ async def load_room_id(message: types.Message, state: FSMContext):
     """
     room_id = message.text
     user_id = str(message.from_user.id)
-    room_and_owner = await check_room_exists(room_id)
-    if room_and_owner:
-        if room_id == room_and_owner[0] and user_id == room_and_owner[1]:
+    room_data = await get_room_by_id(room_id)
+    if room_data:
+        if room_id == room_data[0] and user_id == room_data[1]:
             await set_admin_activity(user_id, 1)
             await message.reply("Вы успешно вошли в комнату как владелец!",
                                 reply_markup=get_room_admin_kb())
@@ -208,7 +215,7 @@ async def load_room_id(message: types.Message, state: FSMContext):
             else:
                 await RoomStates.EnterEmployeeName.set()
                 await message.reply("Введите ваше имя:", reply_markup=get_cancel_keyboard())
-                owner_id = room_and_owner[1]
+                owner_id = room_data[1]
                 await state.update_data(user_id=user_id, owner_id=owner_id, room_id=room_id)
     else:
         await message.reply("Комната с таким id не существует!")
@@ -268,7 +275,9 @@ async def join_room_response_callback(query: types.CallbackQuery) -> None:
     elif result == 'reject':
         await bot.send_message(
             employee_id,
-            text="К сожалению Ваша заявка отклонена Владельцем комнаты. \n")
+            text="К сожалению Ваша заявка отклонена Владельцем комнаты. \n",
+            reply_markup=get_keyboard()
+        )
         await bot.edit_message_text(
             chat_id=query.message.chat.id,
             message_id=query.message.message_id,
@@ -350,7 +359,7 @@ async def cmd_my_checklist(message: types.Message) -> None:
     if employee_status:
         room_id = await get_room_id_by_employee_id(message.from_user.id)
         if room_id:
-            checklist = await get_checklist_for_user(message.from_user.id)
+            checklist = await get_checklist_for_user(message.from_user.id, room_id)
             if checklist:
                 await bot.send_message(
                     message.from_user.id,
@@ -362,15 +371,28 @@ async def cmd_my_checklist(message: types.Message) -> None:
                     text="Мой Чек-лист пуст", )
 
 
+@dp.message_handler(state=RoomStates.ExitEmployee)
+async def process_employee_removal_confirmation(message: types.Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    employee_id = data.get('employee_id')
+    room_id = data.get('room_id')
+    if message.text.strip().lower() == 'покинуть':
+        await set_employee_activity(employee_id, 0)
+        await message.reply(f"Вы покинули комнату {room_id}!", reply_markup=get_keyboard())
+        await state.finish()
+    else:
+        await message.reply("Неверное слово! Попробуйте еще раз или нажмите кнопку 'Отменить'!")
+
+
 @dp.callback_query_handler(text_contains='checklist')
 async def employee_checklist_for_admin_callback_handler(query: types.CallbackQuery) -> None:
     """
-    Обрабатывает команду
+    Отображает список дел для конкретного сотрудника
     """
     user_id = query.data.split(':')[1]
     room_id = query.data.split(':')[2]
     employee_name = query.data.split(':')[3]
-    checklist_for_user = await get_checklist_for_user(user_id)
+    checklist_for_user = await get_checklist_for_user(user_id, room_id)
 
     await bot.edit_message_text(
         chat_id=query.message.chat.id,
@@ -378,6 +400,41 @@ async def employee_checklist_for_admin_callback_handler(query: types.CallbackQue
         text=f"Чек-лист для {employee_name}",
         reply_markup=get_employee_checklist_for_admin_kb(checklist_for_user, room_id, user_id)
     )
+
+
+@dp.callback_query_handler(text_contains='delete_employee')
+async def delete_employee_for_admin_callback_handler(query: types.CallbackQuery, state: FSMContext) -> None:
+    """
+    Обрабатывает кнопку Удалить сотрудника
+    """
+    employee_id = query.data.split(':')[1]
+    room_id = query.data.split(':')[2]
+    employee_name = query.data.split(':')[3]
+
+    await RoomStates.DeleteEmployeeConfirmForAdmin.set()
+    await state.update_data(employee_id=employee_id, room_id=room_id, employee_name=employee_name)
+
+    await bot.send_message(
+        chat_id=query.message.chat.id,
+        text=f"Вы действительно хотите уволить {employee_name}?\n\n"
+             "Все его данные и результаты за месяц будут удалены!\n\n"
+             "Для подтверждения напишите слово 'Уволить'", reply_markup=get_cancel_keyboard())
+
+
+@dp.message_handler(state=RoomStates.DeleteEmployeeConfirmForAdmin)
+async def process_employee_removal_confirmation(message: types.Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    employee_id = data.get('employee_id')
+    room_id = data.get('room_id')
+    employee_name = data.get('employee_name')
+
+    if message.text.strip().lower() == 'уволить':
+        await remove_employee(employee_id, room_id)
+        await message.reply(f"Сотрудник {employee_name} успешно уволен!", reply_markup=get_room_admin_kb())
+        await state.finish()
+        await bot.send_message(employee_id, text="Вы удалены из комнаты!", reply_markup=get_keyboard())
+    else:
+        await message.reply("Неверное слово! Попробуйте еще раз!")
 
 
 @dp.callback_query_handler(text_contains='task_status')
@@ -389,18 +446,25 @@ async def change_task_status_callback_handler(query: types.CallbackQuery) -> Non
     task_for = query.data.split(':')[1]
     task_id = query.data.split(':')[2]
     room_id = query.data.split(':')[3]
-    await change_room_task_status(task_id, user_id)
 
     if task_for == "room":
-        checklist = await get_checklist_for_room(room_id)
+        task_status = await get_room_task_status(task_id)
+        if task_status[0] == '0' or (task_status[0] == '1' and task_status[1] == str(query.message.chat.id)):
 
-        await bot.edit_message_reply_markup(
-            chat_id=user_id,
-            message_id=query.message.message_id,
-            reply_markup=get_room_checklist_for_employee_kb(checklist)
-        )
+            await change_room_task_status(task_id, user_id)
+            checklist = await get_checklist_for_room(room_id)
+            await bot.edit_message_reply_markup(
+                chat_id=user_id,
+                message_id=query.message.message_id,
+                reply_markup=get_room_checklist_for_employee_kb(checklist)
+            )
+
+        else:
+            await bot.answer_callback_query(query.id, text="Эту задачу уже выполнили!", show_alert=True)
+
     elif task_for == "user":
-        checklist = await get_checklist_for_user(user_id)
+        await change_room_task_status(task_id, user_id)
+        checklist = await get_checklist_for_user(user_id, room_id)
 
         await bot.edit_message_reply_markup(
             chat_id=user_id,
@@ -418,7 +482,7 @@ async def add_task_callback_handler(query: types.CallbackQuery, state: FSMContex
 
     await query.answer()
 
-    await query.message.answer("Введите новое дело!", reply_markup=get_task_cancel_kb())
+    await query.message.answer("Введите новое дело!", reply_markup=get_cancel_keyboard())
     await RoomStates.InputTask.set()
     if task_for == 'room':
         await state.update_data(task_for=task_for, room_id=room_id)
@@ -450,7 +514,7 @@ async def process_input_task(message: types.Message, state: FSMContext) -> None:
     elif task_for == 'user':
         user_id = data.get('user_id')
         await add_task(room_id, task_for, task_description, user_id)
-        checklist_for_room = await get_checklist_for_user(user_id)
+        checklist_for_room = await get_checklist_for_user(user_id, room_id)
         await bot.send_message(message.chat.id, "Дело добавлено!", reply_markup=get_room_admin_kb())
         await send_task_notification(room_id, task_description, task_for, user_id)
         await bot.send_message(chat_id=message.chat.id,
@@ -482,7 +546,7 @@ async def delete_task_callback_handler(query: types.CallbackQuery) -> None:
 
     if task_for == 'user':
         employee_id = query.data.split(':')[4]
-        checklist_for_user = await get_checklist_for_user(employee_id)
+        checklist_for_user = await get_checklist_for_user(employee_id, room_id)
         await bot.edit_message_text(chat_id=query.message.chat.id,
                                     message_id=query.message.message_id,
                                     text="Чек-лист",

@@ -71,15 +71,6 @@ def get_pay_kb(user_id) -> InlineKeyboardMarkup:
     return keyboard
 
 
-def get_task_cancel_kb() -> ReplyKeyboardMarkup:
-    kb = ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.add(
-        KeyboardButton('Не вводить новое дело!'),
-    )
-
-    return kb
-
-
 def get_room_admin_kb() -> ReplyKeyboardMarkup:
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
     kb.add(
@@ -97,7 +88,7 @@ def get_room_employee_kb() -> ReplyKeyboardMarkup:
     kb.add(
         KeyboardButton('Чек-лист'),
         KeyboardButton('Мой Чек-лист'),
-        KeyboardButton('Выход'),
+        KeyboardButton('Выход')
     )
 
     return kb
@@ -120,9 +111,11 @@ def get_join_room_request_kb(user_id, room_id, employee_name) -> InlineKeyboardM
 def get_employees_kb(employees, room_id):
     kb = InlineKeyboardMarkup()
     for employee in employees:
-        kb.add(InlineKeyboardButton(
-            employee[1],
-            callback_data=f"checklist:{employee[0]}:{room_id}:{employee[1]}"))
+        employee_row = [
+            InlineKeyboardButton(employee[1], callback_data=f"checklist:{employee[0]}:{room_id}:{employee[1]}"),
+            InlineKeyboardButton('Удалить', callback_data=f"delete_employee:{employee[0]}:{room_id}:{employee[1]}")
+        ]
+        kb.add(*employee_row)
 
     return kb
 
