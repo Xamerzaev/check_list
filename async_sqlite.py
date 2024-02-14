@@ -510,7 +510,7 @@ async def get_all_room_owners():
 async def remove_employee(employee_id, room_id):
     try:
         async with aiosqlite.connect('users.db') as db:
-            await db.execute("DELETE FROM checklist WHERE employee_id = ? AND room_id = ?", (employee_id, room_id))
+            await db.execute("DELETE FROM checklist WHERE employee_id = ? AND room_id = ? AND task_type = 'user'", (employee_id, room_id))
             await db.execute("DELETE FROM employee WHERE employee_id = ? AND room_id = ?", (employee_id, room_id))
             await db.commit()
             logger.info(f"All tasks of employee with ID {employee_id} and the employee himself have been removed successfully.")

@@ -55,7 +55,7 @@ class RoomStates(StatesGroup):
     EnterRoomID = State()
     InputTask = State()
     EnterEmployeeName = State()
-    DeleteEmployeeConfirmForAdmin = State()
+    DeleteEmployee = State()
     ExitEmployee = State()
     ExitAdmin = State()
 
@@ -74,7 +74,7 @@ async def btn_cancel(message: types.Message, state: FSMContext):
     """
     current_state = await state.get_state()
 
-    if current_state in ['RoomStates:InputTask', 'RoomStates:DeleteEmployeeConfirmForAdmin', 'RoomStates:ExitAdmin']:
+    if current_state in ['RoomStates:InputTask', 'RoomStates:DeleteEmployee', 'RoomStates:ExitAdmin']:
         await state.finish()
         await message.reply('Отмена произведена!', reply_markup=get_room_admin_kb())
 
@@ -453,12 +453,13 @@ async def delete_employee_for_admin_callback_handler(query: types.CallbackQuery,
     """
     Обрабатывает кнопку Удалить сотрудника
     """
+    if await state.get_state() == RoomStates.DeleteEmployee.state:
+        await query.answer("Действие уже в процессе. Ожидайте подтверждения.")
+        return
+
     employee_id = query.data.split(':')[1]
     room_id = query.data.split(':')[2]
     employee_name = query.data.split(':')[3]
-
-    await RoomStates.DeleteEmployeeConfirmForAdmin.set()
-    await state.update_data(employee_id=employee_id, room_id=room_id, employee_name=employee_name)
 
     await bot.send_message(
         chat_id=query.message.chat.id,
@@ -466,8 +467,11 @@ async def delete_employee_for_admin_callback_handler(query: types.CallbackQuery,
              "Все его данные и результаты за месяц будут удалены!\n\n"
              "Для подтверждения напишите слово 'Уволить'", reply_markup=get_cancel_keyboard())
 
+    await RoomStates.DeleteEmployee.set()
+    await state.update_data(employee_id=employee_id, room_id=room_id, employee_name=employee_name)
 
-@dp.message_handler(state=RoomStates.DeleteEmployeeConfirmForAdmin)
+
+@dp.message_handler(state=RoomStates.DeleteEmployee)
 async def process_employee_removal_confirmation(message: types.Message, state: FSMContext) -> None:
     data = await state.get_data()
     employee_id = data.get('employee_id')
@@ -477,8 +481,8 @@ async def process_employee_removal_confirmation(message: types.Message, state: F
     if message.text.strip().lower() == 'уволить':
         await remove_employee(employee_id, room_id)
         await message.reply(f"Сотрудник {employee_name} успешно уволен!", reply_markup=get_room_admin_kb())
-        await state.finish()
         await bot.send_message(employee_id, text="Вы удалены из комнаты!", reply_markup=get_keyboard())
+        await state.finish()
     else:
         await message.reply("Неверное слово! Попробуйте еще раз!")
 
