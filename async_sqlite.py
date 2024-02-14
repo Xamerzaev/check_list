@@ -3,6 +3,7 @@ import aiosqlite
 import logging
 import secrets
 
+
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s:%(message)s')
 logger = logging.getLogger(__name__)
 
@@ -30,6 +31,8 @@ async def db_start():
             CREATE TABLE IF NOT EXISTS room(
                 room_id TEXT PRIMARY KEY,
                 creator_user_id TEXT,
+                creation_date DATE DEFAULT (date('now')),
+                next_report_date DATE DEFAULT (date('now', '+1 month')),
                 FOREIGN KEY (creator_user_id) REFERENCES profile(user_id)
             )
             """)
@@ -293,6 +296,7 @@ async def add_employee_in_room(employee_id, room_id, employee_name):
 
 async def get_checklist_for_user(employee_id, room_id):
     try:
+        print(employee_id, room_id)
         async with aiosqlite.connect('users.db') as db:
             result = await db.execute("""
                 SELECT * FROM checklist
@@ -367,26 +371,41 @@ async def get_room_id_by_employee_id(employee_id):
         logger.error(f"Error fetching room_id by employee_id: {e}")
 
 
-async def change_room_task_status(task_id, user_id):
+async def change_task_status(task_id, user_id):
     try:
         async with aiosqlite.connect('users.db') as db:
-            cursor = await db.execute("SELECT task_status FROM checklist WHERE checklist_id = ?", (task_id,))
-            current_status = await cursor.fetchone()
-            if current_status[0] == '0':
-                new_status = '1'
-                await update_employee_task_count(user_id, '+')
-                await db.execute(
-                    "UPDATE checklist SET task_status = ?, employee_id = ? WHERE checklist_id = ?",
-                    (new_status, user_id, task_id,))
-            else:
-                new_status = '0'
-                await update_employee_task_count(user_id, '-')
-                await db.execute(
-                    "UPDATE checklist SET task_status = ?, employee_id = NULL WHERE checklist_id = ?",
-                    (new_status, task_id,))
+            cursor = await db.execute("SELECT * FROM checklist WHERE checklist_id = ?", (task_id,))
+            checklist_id_data = await cursor.fetchone()
+            print(checklist_id_data)
+            if checklist_id_data[5] == 'room':
+                if checklist_id_data[4] == '0':
+                    new_status = '1'
+                    await update_employee_task_count(user_id, '+')
+                    await db.execute(
+                        "UPDATE checklist SET task_status = ?, employee_id = ? WHERE checklist_id = ?",
+                        (new_status, user_id, task_id,))
+                else:
+                    new_status = '0'
+                    await update_employee_task_count(user_id, '-')
+                    await db.execute(
+                        "UPDATE checklist SET task_status = ?, employee_id = NULL WHERE checklist_id = ?",
+                        (new_status, task_id,))
+
+            elif checklist_id_data[5] == 'user':
+                if checklist_id_data[4] == '0':
+                    new_status = '1'
+                    await update_employee_task_count(user_id, '+')
+                    await db.execute(
+                        "UPDATE checklist SET task_status = ?, employee_id = ? WHERE checklist_id = ?",
+                        (new_status, user_id, task_id,))
+                else:
+                    new_status = '0'
+                    await update_employee_task_count(user_id, '-')
+                    await db.execute(
+                        "UPDATE checklist SET task_status = ? WHERE checklist_id = ?",
+                        (new_status, task_id,))
 
             await db.commit()
-
             logger.info(f"Task {task_id} status toggled: {new_status}")
 
     except Exception as e:
@@ -444,7 +463,7 @@ async def set_employee_activity(user_id, is_active):
                 "UPDATE employee SET is_active = ? WHERE employee_id = ?",
                 (is_active, user_id))
             await db.commit()
-            logger.info(f"User activity updated for user {user_id}")
+            logger.info(f"Employee {user_id} leave room")
     except Exception as e:
         logger.error(f"Error updating user activity: {e}")
 
@@ -456,30 +475,36 @@ async def set_admin_activity(user_id, is_active):
                 "UPDATE profile SET is_active = ? WHERE user_id = ?",
                 (is_active, user_id))
             await db.commit()
-            logger.info(f"User activity updated for user {user_id}")
+            logger.info(f"Admin {user_id} leave room")
     except Exception as e:
         logger.error(f"Error updating user activity: {e}")
 
 
-async def get_monthly_report(user_id):
+async def get_monthly_report(user_id, room_id):
     try:
         async with aiosqlite.connect('users.db') as db:
             cursor = await db.execute(
-                "SELECT * FROM room WHERE creator_user_id = ?",
-                (user_id,))
-            room_user = await cursor.fetchone()
-            cursor = await db.execute(
-                "SELECT employee_id, tasks_completed_count FROM employee WHERE room_id = ?",
-                (room_user[0],))
+                "SELECT employee_first_name, tasks_completed_count FROM employee WHERE room_id = ?",
+                (room_id,))
             employees = await cursor.fetchall()
-            data = {}
+            data = ''
 
             for employee in employees:
-                data[room_user[1]] = {employee[0]: employee[1]}
+                data += f"{employee[0]}: {employee[1]}\n"
         return data
 
     except Exception as e:
         logger.error(f"Error sending monthly report for {user_id}: {e}")
+
+
+async def get_all_room_owners():
+    try:
+        async with aiosqlite.connect('users.db') as db:
+            cursor = await db.execute("SELECT * FROM room")
+            owners = await cursor.fetchall()
+            return owners
+    except Exception as e:
+        logger.error(f"Error getting room owners: {e}")
 
 
 async def remove_employee(employee_id, room_id):
@@ -503,13 +528,49 @@ async def get_room_task_status(task_id):
         logger.error(f"Error fetching task status for task ID {task_id}: {e}")
 
 
+async def block_user_access(user_id: int) -> None:
+    try:
+        async with aiosqlite.connect('users.db') as db:
+            await db.execute("""
+                UPDATE profile
+                SET status_check = 8, status_payment = 8, subscribe_period = 8
+                WHERE user_id = ?
+            """, (user_id,))
+            await db.commit()
+            logger.info(f"User {user_id} access to the room has been blocked.")
+    except Exception as e:
+        logger.error(f"Error blocking user {user_id} access to the room: {e}")
 
-# async def get_employee_name(employee_id):
-#     try:
-#         async with aiosqlite.connect('users.db') as db:
-#             cursor = await db.execute("SELECT employee_first_name FROM employee WHERE employee_id = ?", (employee_id,))
-#             employee_name = await cursor.fetchone()
-#             return employee_name[0] if employee_name else None
-#     except Exception as e:
-#         print(f"Error getting employee name: {e}")
-#         return None
+
+async def update_next_report_date(user_id):
+    try:
+        async with aiosqlite.connect('users.db') as db:
+            await db.execute(
+                "UPDATE room SET next_report_date = (date('now', '+1 month')) WHERE creator_user_id = ?",
+                (user_id,)
+            )
+            await db.commit()
+            logging.info(f"Next report date updated for user {user_id}")
+    except Exception as e:
+        logging.error(f"Error updating next report date for user {user_id}: {e}")
+
+
+async def reset_tasks_count_for_room(room_id):
+    try:
+        async with aiosqlite.connect('users.db') as db:
+            await db.execute("UPDATE employee SET tasks_completed_count = 0 WHERE room_id = ?", (room_id,))
+            await db.commit()
+            logging.info(f"Tasks completed count reset for employees in room {room_id}")
+    except Exception as e:
+        logging.error(f"Error resetting tasks completed count for room {room_id}: {e}")
+
+
+async def get_employee_name(employee_id):
+    try:
+        async with aiosqlite.connect('users.db') as db:
+            cursor = await db.execute("SELECT employee_first_name FROM employee WHERE employee_id = ?", (employee_id,))
+            employee_name = await cursor.fetchone()
+            return employee_name[0] if employee_name else None
+    except Exception as e:
+        print(f"Error getting employee name: {e}")
+        return None

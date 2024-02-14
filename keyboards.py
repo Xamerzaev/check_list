@@ -120,15 +120,16 @@ def get_employees_kb(employees, room_id):
     return kb
 
 
-def get_employee_checklist_for_admin_kb(checklist_for_user, room_id, user_id):
+def get_employee_checklist_for_admin_kb(checklist_for_user, room_id, employee_id):
     kb = InlineKeyboardMarkup(row_width=2)
     for task in checklist_for_user:
         task_row = [
             InlineKeyboardButton(task[3], callback_data=f"task"),
-            InlineKeyboardButton("❌", callback_data=f"delete_task:user:{task[0]}:{room_id}:{user_id}")
+            InlineKeyboardButton("❌", callback_data=f"delete_task:user:{task[0]}:{room_id}:{employee_id}")
         ]
         kb.add(*task_row)
-    kb.add(InlineKeyboardButton("Добавить задание", callback_data=f"add_task:user:{room_id}:{user_id}"))
+    kb.add(InlineKeyboardButton("Добавить задание", callback_data=f"add_task:user:{room_id}:{employee_id}"))
+    kb.add(InlineKeyboardButton("Назад", callback_data=f"back:{room_id}"))
 
     return kb
 

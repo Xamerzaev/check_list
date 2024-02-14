@@ -5,8 +5,6 @@ from aiogram.contrib.fsm_storage.memory import MemoryStorage
 from aiogram.dispatcher.filters.state import StatesGroup, State
 from aiogram.types import PreCheckoutQuery, Message
 from aiogram.dispatcher import FSMContext
-from aiogram.utils.exceptions import TelegramAPIError
-import aiohttp
 import asyncio
 import aiocron
 import logging
@@ -14,7 +12,6 @@ import sys
 from dotenv import load_dotenv
 from os import getenv
 from pay import order
-# from pyro_client import add_user_to_group, send_initial_message
 from async_sqlite import (db_start, create_profile, edit_profile,
                           get_pending_profiles, update_profile_status,
                           get_status, update_profile_status_payment,
@@ -26,29 +23,28 @@ from async_sqlite import (db_start, create_profile, edit_profile,
                           add_task, delete_task, get_admin_activity,
                           set_admin_activity, set_employee_activity,
                           get_employee_activity, get_room_id_by_employee_id,
-                          change_room_task_status, get_monthly_report,
-                          get_current_end_date, remove_employee, get_room_task_status)
+                          change_task_status, get_monthly_report,
+                          get_current_end_date, remove_employee, get_room_task_status,
+                          block_user_access, get_all_room_owners, update_next_report_date,
+                          reset_tasks_count_for_room, get_employee_name)
 from keyboards import (get_keyboard, get_cancel_keyboard,
                        get_done_keyboard, get_inline_keyboard,
-                       get_pay_kb, get_room_admin_kb, get_join_room_request_kb, get_room_employee_kb, get_employees_kb,
+                       get_pay_kb, get_room_admin_kb, get_join_room_request_kb,
+                       get_room_employee_kb, get_employees_kb,
                        get_employee_checklist_for_admin_kb, get_room_checklist_for_admin_kb,
                        get_room_checklist_for_employee_kb, get_my_checklist_for_employee_kb)
 
 load_dotenv()
 
-# PROXY_URL для обхода блокировок на PythonEveryWhere
-# PROXY_URL = "http://proxy.server:3128"
-notified_media_groups = {}
-DAYS_IN_RATE = (30, 60, 365)
+DAYS_IN_RATE = (30, 90, 365)
 PRICES_IN_RATE = (300, 900, 3400)
 TOKEN = getenv("BOT_TOKEN")
 MODERATOR = getenv("ID_MODERATOR")
-# GROUP_ID = getenv("GROUP_ID")
-# USER_NAME_ADMIN = getenv("ADMIN")
+
+
 bot = Bot(TOKEN)
 storage = MemoryStorage()
-dp = Dispatcher(bot,
-                storage=storage)
+dp = Dispatcher(bot, storage=storage)
 
 
 async def on_startup(_):
@@ -56,11 +52,12 @@ async def on_startup(_):
 
 
 class RoomStates(StatesGroup):
-    EnterRoomCode = State()
+    EnterRoomID = State()
     InputTask = State()
     EnterEmployeeName = State()
     DeleteEmployeeConfirmForAdmin = State()
     ExitEmployee = State()
+    ExitAdmin = State()
 
 
 class ProfileStateGroup(StatesGroup):
@@ -71,13 +68,13 @@ class ProfileStateGroup(StatesGroup):
 
 
 @dp.message_handler(lambda message: message.text == "Отмена", state='*')
-async def cmd_cancel(message: types.Message, state: FSMContext):
+async def btn_cancel(message: types.Message, state: FSMContext):
     """
     Обрабатывает команду "Отмена"
     """
     current_state = await state.get_state()
 
-    if current_state in ['RoomStates:InputTask', 'RoomStates:DeleteEmployeeConfirmForAdmin']:
+    if current_state in ['RoomStates:InputTask', 'RoomStates:DeleteEmployeeConfirmForAdmin', 'RoomStates:ExitAdmin']:
         await state.finish()
         await message.reply('Отмена произведена!', reply_markup=get_room_admin_kb())
 
@@ -90,31 +87,60 @@ async def cmd_cancel(message: types.Message, state: FSMContext):
 
 
 @dp.message_handler(lambda message: message.text == "Выход")
-async def cmd_cancel(message: types.Message, state: FSMContext):
+async def btn_exit(message: types.Message, state: FSMContext):
     """
-    Обрабатывает команду "Выход с комнаты"
+    Обрабатывает кнопку "Выход"
     """
     user_id = message.from_user.id
     admin_status = await get_admin_activity(user_id)
     employee_status = await get_employee_activity(user_id)
 
-    if admin_status:
-        await set_admin_activity(user_id, 0)
-        await message.reply('Вы вышли из комнаты!',
-                            reply_markup=get_keyboard())
-
-    elif employee_status:
-        room_id = await get_room_id_by_employee_id(user_id)
-        if room_id:
-            await RoomStates.ExitEmployee.set()
+    if admin_status or employee_status:
+        if admin_status:
+            await RoomStates.ExitAdmin.set()
+            room_id = await get_room_id(user_id)
             await state.update_data(
-                employee_id=user_id,
+                exit_for='admin',
                 room_id=room_id
-                )
+            )
             await message.reply(
                 text=f"Вы действительно хотите покинуть комнату {room_id}?\n"
                      "Для подтверждения напишите слово 'Покинуть'",
                 reply_markup=get_cancel_keyboard())
+
+        elif employee_status:
+            await RoomStates.ExitEmployee.set()
+            room_id = await get_room_id_by_employee_id(user_id)
+            if room_id:
+                await state.update_data(
+                    exit_for='employee',
+                    room_id=room_id
+                )
+                await message.reply(
+                    text=f"Вы действительно хотите покинуть комнату {room_id}?\n"
+                         "Для подтверждения напишите слово 'Покинуть'",
+                    reply_markup=get_cancel_keyboard())
+
+
+@dp.message_handler(state=[RoomStates.ExitEmployee, RoomStates.ExitAdmin])
+async def exit_confirmation(message: types.Message, state: FSMContext) -> None:
+    """
+    Обработчик выхода из комнаты
+    """
+    user_id = message.from_user.id
+    data = await state.get_data()
+    room_id = data.get('room_id')
+    exit_for = data.get('exit_for')
+
+    if message.text.strip().lower() == 'покинуть':
+        if exit_for == 'admin':
+            await set_admin_activity(user_id, 0)
+        elif exit_for == 'employee':
+            await set_employee_activity(user_id, 0)
+        await message.reply(f"Вы покинули комнату {room_id}!", reply_markup=get_keyboard())
+        await state.finish()
+    else:
+        await message.reply("Неверное слово! Попробуйте еще раз или нажмите кнопку 'Отменить'!")
 
 
 @dp.message_handler(commands=['start'])
@@ -128,12 +154,30 @@ async def cmd_start(message: types.Message) -> None:
             'Заявки будут вам отправлены как только они поступят.'
         )
     else:
-        await message.answer(
-            f'Приветствую {message.from_user.full_name}! \n\n'
-            'Чтобы начать взаимодействовать с ботом - '
-            'выбери то, что тебе нужно.',
-            reply_markup=get_keyboard()
-        )
+        user_id = message.from_user.id
+        admin_status = await get_admin_activity(user_id)
+        employee_status = await get_employee_activity(user_id)
+        if admin_status:
+            await message.answer(
+                f'Приветствую {message.from_user.full_name}! \n\n'
+                'Чтобы начать взаимодействовать с ботом - '
+                'выбери то, что тебе нужно.',
+                reply_markup=get_room_admin_kb()
+            )
+        elif employee_status:
+            await message.answer(
+                f'Приветствую {message.from_user.full_name}! \n\n'
+                'Чтобы начать взаимодействовать с ботом - '
+                'выбери то, что тебе нужно.',
+                reply_markup=get_room_employee_kb()
+            )
+        else:
+            await message.answer(
+                f'Приветствую {message.from_user.full_name}! \n\n'
+                'Чтобы начать взаимодействовать с ботом - '
+                'выбери то, что тебе нужно.',
+                reply_markup=get_keyboard()
+            )
 
 
 @dp.message_handler(lambda message: message.text == "Помощь")
@@ -159,7 +203,7 @@ async def cmd_help(message: types.Message) -> None:
 
 
 @dp.message_handler(lambda message: message.text == "Создать компанию")
-async def cmd_create(message: types.Message) -> None:
+async def btn_create_company(message: types.Message) -> None:
     """
     Обработчик кнопки `Создать компанию`
     """
@@ -179,7 +223,7 @@ async def cmd_create(message: types.Message) -> None:
 
 
 @dp.message_handler(lambda message: message.text == "Войти в компанию")
-async def cmd_enter_in_room(message: types.Message) -> None:
+async def btn_enter_in_company(message: types.Message) -> None:
     """
     Обработчик кнопки `Войти в компанию`
     """
@@ -189,11 +233,11 @@ async def cmd_enter_in_room(message: types.Message) -> None:
         'Если он у вас уже имеется, введите его!')
     await message.answer(text='Введите ID комнаты',
                          reply_markup=get_cancel_keyboard())
-    await RoomStates.EnterRoomCode.set()
+    await RoomStates.EnterRoomID.set()
 
 
-@dp.message_handler(state=RoomStates.EnterRoomCode)
-async def load_room_id(message: types.Message, state: FSMContext):
+@dp.message_handler(state=RoomStates.EnterRoomID)
+async def enter_room_id(message: types.Message, state: FSMContext):
     """
     Обработчик входа пользователя в комнату`
     """
@@ -253,8 +297,8 @@ async def join_room_response_callback(query: types.CallbackQuery) -> None:
     """
     Обрабатывает команду Владельца комнаты "Одобрить" или "Отклонить" и отвечает пользователю
     """
-    employee_id = query.data.split(':')[2]
     result = query.data.split(':')[1]
+    employee_id = query.data.split(':')[2]
     room_id = query.data.split(':')[3]
     employee_name = query.data.split(':')[4]
 
@@ -286,7 +330,7 @@ async def join_room_response_callback(query: types.CallbackQuery) -> None:
 
 
 @dp.message_handler(lambda message: message.text == "Мои сотрудники")
-async def cmd_my_employees(message: types.Message) -> None:
+async def btn_my_employees(message: types.Message) -> None:
     """
     Обработчик кнопки `Мои Сотрудники`
     """
@@ -296,17 +340,17 @@ async def cmd_my_employees(message: types.Message) -> None:
         employees = await get_employees(room_id)
 
         if employees:
-            sent_message = await bot.send_message(message.from_user.id,
-                                                  text="Мои сотрудники",
-                                                  reply_markup=get_employees_kb(employees, room_id))
-            await bot.delete_message(chat_id=sent_message.chat.id, message_id=sent_message.message_id - 1)
+            await bot.send_message(
+                message.from_user.id,
+                text="Мои сотрудники",
+                reply_markup=get_employees_kb(employees, room_id))
         else:
             await bot.send_message(message.from_user.id,
                                    text="У вас нет сотрудников")
 
 
 @dp.message_handler(lambda message: message.text == "Моя подписка")
-async def cmd_my_employees(message: types.Message) -> None:
+async def btn_my_employees(message: types.Message) -> None:
     """
     Обработчик кнопки `Моя подписка`
     """
@@ -316,42 +360,42 @@ async def cmd_my_employees(message: types.Message) -> None:
         end_date = await get_current_end_date(user_id)
         await bot.send_message(
             user_id,
-            text=f"Ваша подписка закончится: {end_date}")
+            text=f"Ваша подписка закончится: {end_date}\nВы также можете продлить подписку на:",
+            reply_markup=get_pay_kb(user_id))
 
 
 @dp.message_handler(lambda message: message.text == "Чек-лист")
-async def cmd_checklist(message: types.Message) -> None:
+async def btn_checklist(message: types.Message) -> None:
     """
     Обработчик кнопки `Чек-лист`
     """
-    room_id = await get_room_id(message.from_user.id)
-    if room_id:
-        admin_status = await get_admin_activity(message.from_user.id)
-        if admin_status:
-            checklist = await get_checklist_for_room(room_id)
+    admin_status = await get_admin_activity(message.from_user.id)
+    employee_status = await get_employee_activity(message.from_user.id)
+
+    if admin_status:
+        room_id = await get_room_id(message.from_user.id)
+        checklist = await get_checklist_for_room(room_id)
+        await bot.send_message(
+            message.from_user.id,
+            text="Чек-лист",
+            reply_markup=get_room_checklist_for_admin_kb(checklist, room_id))
+
+    elif employee_status:
+        room_id = await get_room_id_by_employee_id(message.from_user.id)
+        checklist = await get_checklist_for_room(room_id)
+        if checklist:
             await bot.send_message(
                 message.from_user.id,
                 text="Чек-лист",
-                reply_markup=get_room_checklist_for_admin_kb(checklist, room_id))
-
-    else:
-        employee_status = await get_employee_activity(message.from_user.id)
-        if employee_status:
-            room_id = await get_room_id_by_employee_id(message.from_user.id)
-            checklist = await get_checklist_for_room(room_id)
-            if checklist:
-                await bot.send_message(
-                    message.from_user.id,
-                    text="Чек-лист",
-                    reply_markup=get_room_checklist_for_employee_kb(checklist))
-            else:
-                await bot.send_message(
-                    message.from_user.id,
-                    text="Чек-лист пуст", )
+                reply_markup=get_room_checklist_for_employee_kb(checklist))
+        else:
+            await bot.send_message(
+                message.from_user.id,
+                text="Чек-лист пуст", )
 
 
 @dp.message_handler(lambda message: message.text == "Мой Чек-лист")
-async def cmd_my_checklist(message: types.Message) -> None:
+async def btn_my_checklist(message: types.Message) -> None:
     """
     Обработчик кнопки `Мой чек-лист`
     """
@@ -371,19 +415,6 @@ async def cmd_my_checklist(message: types.Message) -> None:
                     text="Мой Чек-лист пуст", )
 
 
-@dp.message_handler(state=RoomStates.ExitEmployee)
-async def process_employee_removal_confirmation(message: types.Message, state: FSMContext) -> None:
-    data = await state.get_data()
-    employee_id = data.get('employee_id')
-    room_id = data.get('room_id')
-    if message.text.strip().lower() == 'покинуть':
-        await set_employee_activity(employee_id, 0)
-        await message.reply(f"Вы покинули комнату {room_id}!", reply_markup=get_keyboard())
-        await state.finish()
-    else:
-        await message.reply("Неверное слово! Попробуйте еще раз или нажмите кнопку 'Отменить'!")
-
-
 @dp.callback_query_handler(text_contains='checklist')
 async def employee_checklist_for_admin_callback_handler(query: types.CallbackQuery) -> None:
     """
@@ -399,6 +430,21 @@ async def employee_checklist_for_admin_callback_handler(query: types.CallbackQue
         message_id=query.message.message_id,
         text=f"Чек-лист для {employee_name}",
         reply_markup=get_employee_checklist_for_admin_kb(checklist_for_user, room_id, user_id)
+    )
+
+
+@dp.callback_query_handler(text_contains='back')
+async def back_callback_handler(query: types.CallbackQuery) -> None:
+    """
+    Обрабатывает кнопку 'Назад'
+    """
+    room_id = query.data.split(':')[1]
+    employees = await get_employees(room_id)
+
+    await bot.edit_message_reply_markup(
+        chat_id=query.message.chat.id,
+        message_id=query.message.message_id,
+        reply_markup=get_employees_kb(employees, room_id)
     )
 
 
@@ -451,7 +497,7 @@ async def change_task_status_callback_handler(query: types.CallbackQuery) -> Non
         task_status = await get_room_task_status(task_id)
         if task_status[0] == '0' or (task_status[0] == '1' and task_status[1] == str(query.message.chat.id)):
 
-            await change_room_task_status(task_id, user_id)
+            await change_task_status(task_id, user_id)
             checklist = await get_checklist_for_room(room_id)
             await bot.edit_message_reply_markup(
                 chat_id=user_id,
@@ -463,7 +509,7 @@ async def change_task_status_callback_handler(query: types.CallbackQuery) -> Non
             await bot.answer_callback_query(query.id, text="Эту задачу уже выполнили!", show_alert=True)
 
     elif task_for == "user":
-        await change_room_task_status(task_id, user_id)
+        await change_task_status(task_id, user_id)
         checklist = await get_checklist_for_user(user_id, room_id)
 
         await bot.edit_message_reply_markup(
@@ -508,23 +554,27 @@ async def process_input_task(message: types.Message, state: FSMContext) -> None:
         await send_task_notification(room_id, task_description, task_for)
         checklist_for_room = await get_checklist_for_room(room_id)
         await bot.send_message(chat_id=message.chat.id,
-                               text="Общий Чек-лист",
+                               text="Чек-лист",
                                reply_markup=get_room_checklist_for_admin_kb(checklist_for_room, room_id))
 
     elif task_for == 'user':
         user_id = data.get('user_id')
+        employee_name = await get_employee_name(user_id)
         await add_task(room_id, task_for, task_description, user_id)
         checklist_for_room = await get_checklist_for_user(user_id, room_id)
         await bot.send_message(message.chat.id, "Дело добавлено!", reply_markup=get_room_admin_kb())
         await send_task_notification(room_id, task_description, task_for, user_id)
         await bot.send_message(chat_id=message.chat.id,
-                               text=f"Чек-лист для {user_id}",
+                               text=f"Чек-лист для {employee_name}",
                                reply_markup=get_employee_checklist_for_admin_kb(checklist_for_room, room_id, user_id))
 
     await state.finish()
 
 
 async def send_task_notification(room_id, task_description, task_for, user_id=None):
+    """
+    Оповещвет сотрудника о новом деле
+    """
     if task_for == 'room':
         employees = await get_employees(room_id)
         for employee_id in employees:
@@ -683,12 +733,6 @@ async def approve_callback_handler(query: types.CallbackQuery) -> None:
               'Выберите опцию подписки:'),
         reply_markup=get_pay_kb(user_id)
     )
-    # Вызов функции контакта админа с пользователем
-    # await send_initial_message(
-    #     user_id, 
-    #     ('Привет! Мы добавим вас в группу сразу после оплаты,\n'
-    #      'Пожалуйста удостовертесь в своих настройках чтобы мы могли Вас добавить')
-    #     )
 
 
 @dp.callback_query_handler(text_contains='reject')
@@ -754,13 +798,6 @@ async def process_pre_checkout_query(
     await bot.answer_pre_checkout_query(pre_checkout_query.id, ok=True)
 
 
-# Для получения ID группы - внутри группы
-# @dp.message_handler(Command("group_id"))
-# async def get_group_id(message: types.Message):
-#     chat_id = message.chat.id
-#     await message.answer(f"ID этой группы: {chat_id}")
-
-
 @dp.message_handler(content_types=['successful_payment'])
 async def handle_successful_payment(message: Message):
     """
@@ -777,93 +814,93 @@ async def handle_successful_payment(message: Message):
         await update_subscribe_period(user_id, DAYS_IN_RATE[0])
         await update_end_date(user_id, DAYS_IN_RATE[0])
         await update_profile_status(user_id, 4)
-        await create_new_room(user_id)
 
     elif message.successful_payment.total_amount == PRICES_IN_RATE[1] * 100:
         await update_subscribe_period(user_id, DAYS_IN_RATE[1])
         await update_end_date(user_id, DAYS_IN_RATE[1])
         await update_profile_status(user_id, 5)
-        await create_new_room(user_id)
 
     elif message.successful_payment.total_amount == PRICES_IN_RATE[2] * 100:
         await update_subscribe_period(user_id, DAYS_IN_RATE[2])
         await update_end_date(user_id, DAYS_IN_RATE[2])
         await update_profile_status(user_id, 6)
+
+    has_room = await get_room_id(user_id)
+    prices_in_rate = message.successful_payment.total_amount
+
+    if has_room:
+        admin_status = await get_admin_activity(user_id)
+        if admin_status == 0:
+            await set_admin_activity(user_id, 1)
+        await message.answer(
+            text=f"Ваша подписка успешно продлена на {int(prices_in_rate / 1000)} дней!",
+            reply_markup=get_room_admin_kb()
+        )
+    elif not has_room:
         await create_new_room(user_id)
+        room_id = await get_room_id(user_id)
+        if room_id:
+            await set_admin_activity(user_id, 1)
+            await message.answer(
+                text=f"Ваша комната успешно создана!\nИдентификатор комнаты: {room_id}\nСохраните его в надежном месте.",
+                reply_markup=get_room_admin_kb()
+            )
+        else:
+            await message.answer(
+                text=f"Ошибка в создании комнаты!",
+                reply_markup=get_keyboard())
 
-    # функция добавления пользователя в группу
-    # await add_user_to_group(message.from_user.id, GROUP_ID)
 
-    room_id = await get_room_id(user_id)
-    await set_admin_activity(user_id, 1)
-    await message.answer(
-        text=f"Ваша комната успешно создана!\nИдентификатор комнаты: {room_id}\nСохраните его в надежном месте.",
-        reply_markup=get_room_admin_kb()
-    )
+@aiocron.crontab('0 10 * * *')
+async def check_subscriptions_and_remind() -> None:
+    """
+    Функция для планировщика - проверяет срок подписки за 3 дня
+    и оповещает пользователя с подпиской
+    """
+    current_date = datetime.now().date()
+    for subscriber in await get_all_subscribers():
+        user_id = subscriber[0]
+        end_date_str = subscriber[-2]
+
+        if end_date_str:
+            try:
+                end_date = datetime.strptime(end_date_str, "%Y-%m-%d").date()
+                if end_date - timedelta(days=3) == current_date:
+                    await send_reminder(user_id)
+                elif end_date == current_date:
+                    await block_user_access(user_id)
+                    await set_admin_activity(user_id, 0)
+                    await bot.send_message(user_id,
+                                           text='Внимание! Ваш доступ к комнате был заблокирован',
+                                           reply_markup=get_keyboard())
+                    await bot.send_message(user_id,
+                                           text='Вы также можете продлить подписку',
+                                           reply_markup=get_pay_kb(user_id))
+
+            except ValueError as e:
+                logging.error(f"Ошибка при разборе даты для пользователя {user_id}: {e}")
+        else:
+            logging.warning(f"Пустая строка end_date_str для пользователя {user_id}")
 
 
-# async def create_new_room(message: types.Message) -> str:
-#     """
-#     Функция использует Telegram Api
-#     для создания пригласительной ссылки с особыми параметрами
-#     """
-#     url = f'https://api.telegram.org/bot{TOKEN}/createChatInviteLink'
-#     expire_timestamp = int((datetime.now() + timedelta(days=3)).timestamp())
-#     params = {
-#         'chat_id': GROUP_ID,
-#         'name': 'Пригласительная',
-#         'expire_date': expire_timestamp,
-#         'member_limit': 1
-#     }
+async def send_reminder(user_id: int) -> None:
+    await bot.send_message(user_id,
+                           text='Ваша подписка истекает через 3 дня!\nВы также можете продлить подписку на:',
+                           reply_markup=get_pay_kb(user_id))
 
-#     async with aiohttp.ClientSession() as session:
-#         async with session.post(url, json=params) as response:
-#             result = await response.json()
-#
-#     if result['ok']:
-#         invite_link = result['result']['invite_link']
-#         return f'Ваша одноразовая ссылка: {invite_link}'
-#     else:
-#         print(f'Ошибка: {result["description"]}')
-#         return 'Ошибка при создании пригласительной ссылки.' \
-#                'Обратитесь к администратору'
 
-#
-# @aiocron.crontab('0 10 * * *')
-# async def check_subscriptions_and_remind() -> None:
-#     """
-#     Функция для планировщика - проверяет срок подписки за 3 дня
-#     и оповещает пользователя с подпиской
-#     """
-#     current_date = datetime.now().date()
-#     for subscriber in await get_all_subscribers():
-#         user_id = subscriber[0]
-#         end_date_str = subscriber[-1]
-#
-#         if end_date_str:
-#             try:
-#                 end_date = datetime.strptime(end_date_str, "%Y-%m-%d").date()
-#                 if end_date - timedelta(days=3) == current_date:
-#                     await send_reminder(user_id)
-#                 elif end_date == current_date:
-#                     await kick_user_from_group(user_id)
-#             except ValueError as e:
-#                 logging.error(f"Ошибка при разборе даты для пользователя {user_id}: {e}")
-#         else:
-#             logging.warning(f"Пустая строка end_date_str для пользователя {user_id}")
-#
-#
-# async def send_reminder(user_id: int) -> None:
-#     await bot.send_message(user_id,
-#                            text='Ваша подписка истекает через три дня!',
-#                            reply_markup=get_pay_kb(user_id))
-#
-#
-# async def kick_user_from_group(user_id: int) -> None:
-#     try:
-#         await bot.kick_chat_member(GROUP_ID, user_id)
-#     except TelegramAPIError as e:
-#         print(f"Ошибка при исключении пользователя: {e}")
+@aiocron.crontab('0 10 * * *')
+async def check_all_monthly_reports():
+    owners = await get_all_room_owners()
+    for owner in owners:
+        today = datetime.now().date()
+        if str(today) == str(owner[3]):
+            monthly_report = await get_monthly_report(user_id=owner[1], room_id=owner[0])
+            if monthly_report:
+                await bot.send_message(owner[1],
+                                       text=f'Отчет о выполненных заданий сотрудников за прошедший месяц\n\n{monthly_report}')
+            await update_next_report_date(user_id=owner[1])
+            await reset_tasks_count_for_room(room_id=owner[0])
 
 
 if __name__ == "__main__":
