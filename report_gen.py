@@ -8,7 +8,6 @@ from async_sqlite import get_report_data_for_room, get_report_data_for_employee
 async def generate_pdf_report(room_id):
     room = await get_report_data_for_room(room_id)
     employees = await get_report_data_for_employee(room_id)
-    print(room, '\n\n\n\n\n', employees)
     total_tasks_added = room['total_tasks_added']
     total_tasks_completed = room['total_tasks_completed']
     total_tasks_incomplete = room['total_tasks_incomplete']
