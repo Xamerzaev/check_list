@@ -1,50 +1,62 @@
-import os
+from os import getenv, path, remove
+from dotenv import load_dotenv
 from datetime import datetime, timedelta
-from io import BytesIO
+import asyncio
+import aiocron
+import logging
+import sys
 
 from aiogram import Bot, Dispatcher, types, executor
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
 from aiogram.dispatcher.filters.state import StatesGroup, State
 from aiogram.types import PreCheckoutQuery, Message
 from aiogram.dispatcher import FSMContext
-import asyncio
-import aiocron
-import logging
-import sys
-from dotenv import load_dotenv
-from os import getenv
+
 from pay import order
 from report_gen import generate_pdf_report
-from async_sqlite import (db_start, create_profile, edit_profile,
-                          get_pending_profiles, update_profile_status,
-                          get_status, update_profile_status_payment,
-                          update_subscribe_period, update_end_date,
-                          get_all_subscribers, create_new_room,
-                          get_room_by_id, check_employee_in_room,
-                          add_employee_in_room, get_room_id, get_employees,
-                          get_checklist_for_user, get_checklist_for_room,
-                          add_task, delete_task, get_admin_activity,
-                          set_admin_activity, set_employee_activity,
-                          get_employee_activity, get_room_id_by_employee_id,
-                          change_task_status,
-                          get_current_end_date, remove_employee, get_room_task_status,
-                          block_user_access, get_all_room_owners,
-                          clear_room_task_completion, get_employee_name,
-                          reset_task_status
-                          )
-from keyboards import (get_keyboard, get_cancel_keyboard,
-                       get_done_keyboard, get_inline_keyboard,
-                       get_pay_kb, get_room_admin_kb, get_join_room_request_kb,
-                       get_room_employee_kb, get_employees_kb,
-                       get_employee_checklist_for_admin_kb, get_room_checklist_for_admin_kb,
-                       get_room_checklist_for_employee_kb, get_my_checklist_for_employee_kb)
+from async_sqlite import (
+    db_start, create_profile, edit_profile, get_pending_profiles,
+    update_profile_status, update_profile_status_payment,
+    update_subscribe_period, update_end_date, get_all_subscribers,
+    create_new_room, get_room_by_id, check_employee_in_room,
+    add_employee_in_room, get_room_id, get_employees,
+    get_checklist_for_user, get_checklist_for_room, add_task, delete_task,
+    get_admin_activity, set_admin_activity, set_employee_activity,
+    get_employee_activity, get_room_id_by_employee_id, change_task_status,
+    get_current_end_date, remove_employee, get_room_task_status,
+    block_user_access, get_all_room_owners, clear_room_task_completion,
+    get_employee_name, reset_task_status, count_employees_in_room,
+    get_status_check
+)
+from keyboards import (
+    get_keyboard, get_cancel_keyboard,
+    get_inline_keyboard, get_pay_kb, get_room_admin_kb,
+    get_join_room_request_kb, get_room_employee_kb, get_employees_kb,
+    get_employee_checklist_for_admin_kb, get_room_checklist_for_admin_kb,
+    get_room_checklist_for_employee_kb, get_my_checklist_for_employee_kb,
+    get_pay_kb2
+)
 
 load_dotenv()
 
-DAYS_IN_RATE = (30, 90, 365)
-PRICES_IN_RATE = (300, 900, 3400)
+TARIFFS = {
+    500: (3, 30, 41),
+    700: (6, 30, 42),
+    1500: (15, 30, 43),
+    2490: ('Безлимит', 30, 44),
+    1490: (3, 90, 51),
+    2100: (6, 90, 52),
+    4500: (15, 90, 53),
+    7470: ('Безлимит', 90, 54),
+    6000: (3, 365, 61),
+    8400: (6, 365, 62),
+    18000: (15, 365, 63),
+    29880: ('Безлимит', 365, 64),
+}
+
 TOKEN = getenv("BOT_TOKEN")
 MODERATOR = getenv("ID_MODERATOR")
+USER_NAME_ADMIN = getenv("USER_NAME_ADMIN")
 
 bot = Bot(TOKEN)
 storage = MemoryStorage()
@@ -55,7 +67,7 @@ async def on_startup(_):
     await db_start()
 
 
-class RoomStates(StatesGroup):
+class RoomState(StatesGroup):
     EnterRoomID = State()
     InputTask = State()
     EnterEmployeeName = State()
@@ -78,11 +90,11 @@ async def btn_cancel(message: types.Message, state: FSMContext):
     """
     current_state = await state.get_state()
 
-    if current_state in ['RoomStates:InputTask', 'RoomStates:DeleteEmployee', 'RoomStates:ExitAdmin']:
+    if current_state in ['RoomState:InputTask', 'RoomState:DeleteEmployee', 'RoomState:ExitAdmin']:
         await state.finish()
         await message.reply('Отмена произведена!', reply_markup=get_room_admin_kb())
 
-    elif current_state in ['RoomStates:ExitEmployee']:
+    elif current_state in ['RoomState:ExitEmployee']:
         await state.finish()
         await message.reply('Отмена произведена!', reply_markup=get_room_employee_kb())
     else:
@@ -102,25 +114,25 @@ async def btn_exit(message: types.Message, state: FSMContext):
     if admin_status:
         room_id = await get_room_id(user_id)
         await message.reply(
-            text=f"Вы действительно хотите покинуть комнату {room_id}?\n"
-                 "Для подтверждения напишите слово 'Покинуть'",
+            text=f'Вы действительно хотите покинуть комнату {room_id}?\n\n'
+                 'Для подтверждения напишите слово "Покинуть"',
             reply_markup=get_cancel_keyboard())
 
-        await RoomStates.ExitAdmin.set()
+        await RoomState.ExitAdmin.set()
         await state.update_data(exit_for='admin', room_id=room_id)
 
     elif employee_status:
         room_id = await get_room_id_by_employee_id(user_id)
         if room_id:
             await message.reply(
-                text=f"Вы действительно хотите покинуть комнату {room_id}?\n"
-                     "Для подтверждения напишите слово 'Покинуть'",
+                text=f'Вы действительно хотите покинуть комнату {room_id}?\n\n'
+                     'Для подтверждения напишите слово "Покинуть"',
                 reply_markup=get_cancel_keyboard())
-            await RoomStates.ExitEmployee.set()
+            await RoomState.ExitEmployee.set()
             await state.update_data(exit_for='employee', room_id=room_id)
 
 
-@dp.message_handler(state=[RoomStates.ExitEmployee, RoomStates.ExitAdmin])
+@dp.message_handler(state=[RoomState.ExitEmployee, RoomState.ExitAdmin])
 async def exit_confirmation(message: types.Message, state: FSMContext) -> None:
     """
     Обработчик выхода из комнаты
@@ -149,7 +161,7 @@ async def cmd_start(message: types.Message) -> None:
     if int(MODERATOR) == int(message.from_user.id):
         await message.answer(
             'Здравствуйте! Вы модератор. Вам будут высылаться заявки. \n\n'
-            'Заявки будут вам отправлены как только они поступят.'
+            'Заявки будут Вам отправлены как только они поступят.'
         )
     else:
         user_id = message.from_user.id
@@ -157,7 +169,7 @@ async def cmd_start(message: types.Message) -> None:
         employee_status = await get_employee_activity(user_id)
         if admin_status:
             await message.answer(
-                f'Приветствую {message.from_user.full_name}! \n\n'
+                f'Приветствую, {message.from_user.full_name}! \n\n'
                 'Чтобы начать взаимодействовать с ботом - '
                 'выбери то, что тебе нужно.',
                 reply_markup=get_room_admin_kb()
@@ -184,20 +196,12 @@ async def cmd_help(message: types.Message) -> None:
     Обработчик кнопки `Помощь`
     """
     await message.reply(
-        'Этот бот-ассистент создан для помощи в организации '
-        'порядка в бизнесе. Вот основные шаги:\n\n'
-        '1. Составление Анкеты: Вы заполняете анкету с '
-        'инструкциями, предоставленными ботом, чтобы зарегистрировать'
-        'свою компанию\n'
-        '2. Оплата подписки: После отправки вашей анкеты, вы можете оплатить'
-        'подписку через бота.\n'
-        '3. Информация о Тарифах: При успешной отправке анкеты вы '
-        'получите информацию о тарифах подписки.\n'
-        '5. Доступ в систему: После оплаты вам будет '
-        'предоставлена возможность составление основного чек-листа.\n'
-        '6. После добавление сотрудника, вы сможете изменить чек-лист под него.\n\n'
-        'Мы всегда готовы помочь вам на каждом этапе!'
-    )
+        "Этот бот-ассистент создан для помощи в организации порядка в бизнесе. Вот основные шаги:\n\n"
+        "1. Вы заполняете анкету с инструкциями, предоставленными ботом, чтобы зарегистрировать свою компанию.\n"
+        "2. После проверки вашей анкеты администратором Вы получите доступ в комнату, с возможностью добавления"
+        "одного сотрудника, создания Общего Чек-листа а также индивидуального под сотрудника.\n"
+        "3. Получить информацию о тарифах а также произвести оплату можно, нажав кнопку “Моя подписка”.\n\n"
+        "Мы всегда готовы помочь вам на каждом этапе!")
 
 
 @dp.message_handler(lambda message: message.text == "Создать компанию")
@@ -207,8 +211,8 @@ async def btn_create_company(message: types.Message) -> None:
     """
     await message.reply(
         'Вам необходимо заполнить профиль '
-        'и после успешной модерации вы сможете выбрать и оплатить '
-        'подписку на определенный срок.\n\n'
+        'и после успешной модерации вы получите доступ '
+        'в комнату.\n\n'
         'Давайте начнем заполнять профиль Вашей компании!\n\n'
         'Продолжая диалог с ботом и предоставляя свои личные '
         'данные, вы соглашаетесь с обработкой ваших данных в '
@@ -218,6 +222,151 @@ async def btn_create_company(message: types.Message) -> None:
                          reply_markup=get_cancel_keyboard())
     await ProfileStateGroup.name.set()
     await create_profile(user_id=message.from_user.id)
+
+
+@dp.message_handler(state=ProfileStateGroup.name)
+async def load_name(message: types.Message, state: FSMContext) -> None:
+    """
+    Обработчик имени
+    """
+    async with state.proxy() as data:
+        data['name'] = message.text
+        await message.reply(
+            'Предоставьте ваш номер для связи'
+        )
+        await ProfileStateGroup.phone.set()
+
+
+@dp.message_handler(state=ProfileStateGroup.phone)
+async def load_phone(message: types.Message, state: FSMContext) -> None:
+    """
+    Обработчик номера телефона
+    """
+    async with state.proxy() as data:
+        data['phone'] = message.text
+        await message.reply(
+            'Напишите название Вашей компании.'
+        )
+        await ProfileStateGroup.organization.set()
+
+
+@dp.message_handler(state=ProfileStateGroup.organization)
+async def load_organization(message: types.Message, state: FSMContext) -> None:
+    """
+    Обработчик организации
+    """
+    async with state.proxy() as data:
+        data['organization'] = message.text
+        await message.answer(
+            'Где находится Ваша компания?'
+        )
+        await ProfileStateGroup.location.set()
+
+
+@dp.message_handler(state=ProfileStateGroup.location)
+async def load_location(message: types.Message, state: FSMContext) -> None:
+    """
+    Обработчик последнего поля анкеты
+    """
+    async with state.proxy() as data:
+        data['location'] = message.text
+    user_id = message.from_user.id
+    await edit_profile(state, user_id)
+    await update_profile_status(user_id, status_check=0)
+    await message.reply('Отлично! Вы заполнили анкету.\nАнкета на проверке. Ожидайте результата.',
+                        reply_markup=get_keyboard())
+    await state.finish()
+    await start_moderation(message)
+
+
+async def start_moderation(message: types.Message) -> None:
+    """
+    Начинает формирование анкеты для отправки
+    """
+    profiles = await get_pending_profiles()
+    for profile in profiles:
+        await send_profile_for_moderation(
+            profile,
+            MODERATOR,
+            message.bot
+        )
+        user_id = profile[0]
+        await update_profile_status(user_id, status_check=1)
+        await asyncio.sleep(3)
+    await bot.send_message(MODERATOR, "Все анкеты отправлены для проверки.")
+
+
+async def send_profile_for_moderation(profile, moderator_id, bot) -> None:
+    """
+    Отпавляет профиль пользователя на модерация
+    """
+    user_id = profile[0]
+    name = profile[1]
+    phone = profile[2]
+    organization = profile[3]
+    location = profile[4]
+
+    caption = f"Анкета пользователя:\n\n" \
+              f"Идентификатор пользователя: {user_id}\n" \
+              f"Имя: {name}\n" \
+              f"Телефон: {phone}\n" \
+              f"Организация: {organization}\n" \
+              f"Местоположение: {location}\n\n" \
+
+    await bot.send_message(moderator_id, text=caption,
+                           reply_markup=get_inline_keyboard(user_id))
+
+
+@dp.callback_query_handler(lambda c: c.data.startswith('approve'))
+async def approve_callback_handler(query: types.CallbackQuery) -> None:
+    """
+    Обрабатывает команду модеаратора "Одобрить" и отвечает пользователю
+    """
+    user_id = query.data.split(':')[1]
+    await update_profile_status(user_id, status_check=2)
+    await query.answer("Анкета одобрена.")
+    await bot.edit_message_text(
+        chat_id=query.message.chat.id,
+        message_id=query.message.message_id,
+        text="✅ Заявка одобрена"
+    )
+
+    status_check = await get_status_check(user_id)
+    if status_check == 2:
+        await create_new_room(user_id)
+        await update_profile_status(user_id, status_check=4)
+        room_id = await get_room_id(user_id)
+        if room_id:
+            await set_admin_activity(user_id, 1)
+            await bot.send_message(user_id,
+                                   text=f"Ваша заявка прошла модерацию!\nКомната успешно создана!\nИдентификатор комнаты: {room_id}\nСохраните его в надежном месте.",
+                                   reply_markup=get_room_admin_kb()
+                                   )
+        else:
+            await bot.send_message(user_id,
+                                   text=f"Ошибка в создании комнаты!",
+                                   reply_markup=get_keyboard())
+
+
+@dp.callback_query_handler(lambda c: c.data.startswith('approve'))
+async def reject_callback_handler(query: types.CallbackQuery) -> None:
+    """
+    Обрабатывает команду модератора "Отклонить" и отвечает пользователю
+    """
+    user_id = query.data.split(':')[1]
+    await update_profile_status(user_id, status_check=3)
+    await bot.send_message(
+        user_id,
+        text=("К сожалению Ваша заявка отклонена модератором. \n"
+              "Напишите модератору для получения более детальной информации"
+              f"✉️ {USER_NAME_ADMIN}"), reply_markup=get_keyboard()
+    )
+    await query.answer("Анкета отклонена.")
+    await bot.edit_message_text(
+        chat_id=query.message.chat.id,
+        message_id=query.message.message_id,
+        text=" ❌ Заявка отклонена"
+    )
 
 
 @dp.message_handler(lambda message: message.text == "Войти в компанию")
@@ -231,22 +380,28 @@ async def btn_enter_in_company(message: types.Message) -> None:
         'Если он у вас уже имеется, введите его!')
     await message.answer(text='Введите ID комнаты',
                          reply_markup=get_cancel_keyboard())
-    await RoomStates.EnterRoomID.set()
+    await RoomState.EnterRoomID.set()
 
 
-@dp.message_handler(state=RoomStates.EnterRoomID)
+@dp.message_handler(state=RoomState.EnterRoomID)
 async def enter_room_id(message: types.Message, state: FSMContext):
     """
     Обработчик входа пользователя в комнату`
     """
     room_id = message.text
-    user_id = str(message.from_user.id)
+    user_id = message.from_user.id
     room_data = await get_room_by_id(room_id)
     if room_data:
-        if room_id == room_data[0] and user_id == room_data[1]:
-            await set_admin_activity(user_id, 1)
-            await message.reply("Вы успешно вошли в комнату как владелец!",
-                                reply_markup=get_room_admin_kb())
+        if room_id == room_data[0] and int(user_id) == int(room_data[1]):
+            status_check = await get_status_check(user_id)
+            if status_check == 6:
+                await bot.send_message(user_id,
+                                       text='Внимание! Ваш доступ к комнате был заблокирован\n\nВы также можете продлить подписку',
+                                       reply_markup=get_pay_kb(user_id))
+            else:
+                await set_admin_activity(user_id, 1)
+                await message.reply("Вы успешно вошли в комнату как владелец!",
+                                    reply_markup=get_room_admin_kb())
             await state.finish()
         else:
             if await check_employee_in_room(room_id, user_id):
@@ -257,13 +412,13 @@ async def enter_room_id(message: types.Message, state: FSMContext):
             else:
                 await message.reply("Введите ваше имя:", reply_markup=get_cancel_keyboard())
                 owner_id = room_data[1]
-                await RoomStates.EnterEmployeeName.set()
+                await RoomState.EnterEmployeeName.set()
                 await state.update_data(user_id=user_id, owner_id=owner_id, room_id=room_id)
     else:
         await message.reply("Комната с таким id не существует!")
 
 
-@dp.message_handler(state=RoomStates.EnterEmployeeName)
+@dp.message_handler(state=RoomState.EnterEmployeeName)
 async def process_employee_name(message: types.Message, state: FSMContext):
     """
     Обработчик ввода имени сотрудника
@@ -283,14 +438,33 @@ async def send_request_entry_to_room(user_id, employee_name, owner_id, room_id, 
     """
     Отпавляет запрос владельцу на присоединение в комнату
     """
-    await bot.send_message(
-        owner_id,
-        text=f'Пользователь: {employee_name} хочет присоединиться в вашу комнату',
-        reply_markup=get_join_room_request_kb(user_id, room_id, employee_name)
-    )
+    count_employees = await count_employees_in_room(room_id)
+    status_check = await get_status_check(owner_id)
+    if status_check == 4 and count_employees < 1:
+        await bot.send_message(
+            owner_id,
+            text=f'Пользователь: {employee_name} хочет присоединиться в вашу комнату',
+            reply_markup=get_join_room_request_kb(user_id, room_id, employee_name)
+        )
+    elif 41 <= status_check <= 64:
+        for tariff in TARIFFS.values():
+            if tariff[2] == status_check and count_employees < tariff[0]:
+                await bot.send_message(
+                    owner_id,
+                    text=f'Пользователь: {employee_name} хочет присоединиться в вашу комнату',
+                    reply_markup=get_join_room_request_kb(user_id, room_id, employee_name)
+                )
+    else:
+        await bot.send_message(
+            owner_id,
+            text=f'Пользователь: {employee_name} хочет присоединиться в вашу комнату!\n'
+                 f'Вы не можете принять либо отклонить так как у вас превышен лимит сотрудников!\n'
+                 f'Вы можете подписаться',
+            reply_markup=get_pay_kb(owner_id)
+        )
 
 
-@dp.callback_query_handler(text_contains='join_room')
+@dp.callback_query_handler(lambda c: c.data.startswith('join_room'))
 async def join_room_response_callback(query: types.CallbackQuery, state: FSMContext) -> None:
     """
     Обрабатывает команду Владельца комнаты "Одобрить" или "Отклонить" и отвечает пользователю
@@ -299,7 +473,6 @@ async def join_room_response_callback(query: types.CallbackQuery, state: FSMCont
     employee_id = query.data.split(':')[2]
     room_id = query.data.split(':')[3]
     employee_name = query.data.split(':')[4]
-
     if result == 'approve':
         await bot.edit_message_text(
             chat_id=query.message.chat.id,
@@ -316,6 +489,7 @@ async def join_room_response_callback(query: types.CallbackQuery, state: FSMCont
         )
 
     elif result == 'reject':
+
         await bot.send_message(
             employee_id,
             text="К сожалению Ваша заявка отклонена Владельцем комнаты. \n",
@@ -357,10 +531,20 @@ async def btn_my_employees(message: types.Message) -> None:
     admin_status = await get_admin_activity(user_id)
     if admin_status:
         end_date = await get_current_end_date(user_id)
-        await bot.send_message(
-            user_id,
-            text=f"Ваша подписка закончится: {end_date}\nВы также можете продлить подписку на:",
-            reply_markup=get_pay_kb(user_id))
+        status_check = await get_status_check(user_id)
+        found_key = next((key for key, value in TARIFFS.items() if value[-1] == status_check), None)
+        if end_date:
+            await bot.send_message(
+                user_id,
+                text=f"Ваш тариф: Сотрудников ({TARIFFS[found_key][0]})\nСрок: {TARIFFS[found_key][1]} дней\n"
+                     f"Дата окончания: {end_date}\n\n"
+                     f"Вы также можете продлить подписку на:",
+                reply_markup=get_pay_kb(user_id))
+        else:
+            await bot.send_message(
+                user_id,
+                text=f"Вы находитель в тестовом режиме с возможностью добавления 1го сотрудника\n\nВы также можете сменить подписку:",
+                reply_markup=get_pay_kb(user_id))
 
 
 @dp.message_handler(lambda message: message.text == "Чек-лист")
@@ -437,14 +621,22 @@ async def back_callback_handler(query: types.CallbackQuery) -> None:
     """
     Обрабатывает кнопку 'Назад'
     """
-    room_id = query.data.split(':')[1]
-    employees = await get_employees(room_id)
+    action = query.data.split(':')[1]
+    if action == 'room':
+        room_id = query.data.split(':')[2]
+        employees = await get_employees(room_id)
 
-    await bot.edit_message_reply_markup(
-        chat_id=query.message.chat.id,
-        message_id=query.message.message_id,
-        reply_markup=get_employees_kb(employees, room_id)
-    )
+        await bot.edit_message_reply_markup(
+            chat_id=query.message.chat.id,
+            message_id=query.message.message_id,
+            reply_markup=get_employees_kb(employees, room_id)
+        )
+    elif action == 'tariff':
+        await bot.edit_message_reply_markup(
+            chat_id=query.message.chat.id,
+            message_id=query.message.message_id,
+            reply_markup=get_pay_kb(query.message.chat.id)
+        )
 
 
 @dp.callback_query_handler(text_contains='delete_employee')
@@ -462,11 +654,11 @@ async def delete_employee_for_admin_callback_handler(query: types.CallbackQuery,
              "Все его данные и результаты за месяц будут удалены!\n\n"
              "Для подтверждения напишите слово 'Уволить'", reply_markup=get_cancel_keyboard())
 
-    await RoomStates.DeleteEmployee.set()
+    await RoomState.DeleteEmployee.set()
     await state.update_data(employee_id=employee_id, room_id=room_id, employee_name=employee_name)
 
 
-@dp.message_handler(state=RoomStates.DeleteEmployee)
+@dp.message_handler(state=RoomState.DeleteEmployee)
 async def process_employee_removal_confirmation(message: types.Message, state: FSMContext) -> None:
     data = await state.get_data()
     employee_id = data.get('employee_id')
@@ -495,7 +687,6 @@ async def change_task_status_callback_handler(query: types.CallbackQuery) -> Non
     if task_for == "room":
         task_status = await get_room_task_status(task_id)
         if task_status[0] == '0' or (task_status[0] == '1' and task_status[1] == str(query.message.chat.id)):
-
             await change_task_status(task_id, user_id)
             checklist = await get_checklist_for_room(room_id)
             await bot.edit_message_reply_markup(
@@ -528,7 +719,7 @@ async def add_task_callback_handler(query: types.CallbackQuery, state: FSMContex
     await query.answer()
 
     await query.message.answer("Введите новое дело!", reply_markup=get_cancel_keyboard())
-    await RoomStates.InputTask.set()
+    await RoomState.InputTask.set()
     if task_for == 'room':
         await state.update_data(task_for=task_for, room_id=room_id)
     elif task_for == 'user':
@@ -536,7 +727,7 @@ async def add_task_callback_handler(query: types.CallbackQuery, state: FSMContex
         await state.update_data(user_id=user_id, task_for=task_for, room_id=room_id)
 
 
-@dp.message_handler(state=RoomStates.InputTask)
+@dp.message_handler(state=RoomState.InputTask)
 async def process_input_task(message: types.Message, state: FSMContext) -> None:
     """
     Обрабатывает введенное пользователем дело и добавляет его
@@ -609,150 +800,29 @@ async def delete_task_callback_handler(query: types.CallbackQuery) -> None:
                                     reply_markup=get_room_checklist_for_admin_kb(checklist_for_room, room_id))
 
 
-@dp.message_handler(state=ProfileStateGroup.name)
-async def load_name(message: types.Message, state: FSMContext) -> None:
+@dp.callback_query_handler(lambda c: c.data and c.data.startswith('tariff'))
+async def handle_subscribe_callback(query: types.CallbackQuery) -> None:
     """
-    Обработчик имени
+    Обрабатывает команды инлайн клавиатуры с тарифами
     """
-    async with state.proxy() as data:
-        data['name'] = message.text
-        await message.reply(
-            'Предоставьте ваш номер для связи'
-        )
-        await ProfileStateGroup.phone.set()
-
-
-@dp.message_handler(state=ProfileStateGroup.phone)
-async def load_phone(message: types.Message, state: FSMContext) -> None:
-    """
-    Обработчик номера телефона
-    """
-    async with state.proxy() as data:
-        data['phone'] = message.text
-        await message.reply(
-            'Напишите название Вашей компании.'
-        )
-        await ProfileStateGroup.organization.set()
-
-
-@dp.message_handler(state=ProfileStateGroup.organization)
-async def load_organization(message: types.Message, state: FSMContext) -> None:
-    """
-    Обработчик организации
-    """
-    async with state.proxy() as data:
-        data['organization'] = message.text
-        await message.answer(
-            'Где находится Ваша компания?'
-        )
-        await ProfileStateGroup.location.set()
-
-
-@dp.message_handler(state=ProfileStateGroup.location)
-async def load_location(message: types.Message, state: FSMContext) -> None:
-    """
-    Обработчик последнего поля анкеты
-    """
-    async with state.proxy() as data:
-        data['location'] = message.text
-    user_id = message.from_user.id
-    await edit_profile(state, user_id)
-    await update_profile_status(user_id, status_check=0)
-    await message.reply('Отлично! Вы заполнили анкету.',
-                        reply_markup=get_done_keyboard())
-    await state.finish()
-    await start_moderation(message)
-
-
-@dp.message_handler(lambda message: message.text == "Готово")
-async def btn_done(message: types.Message) -> None:
-    """
-    Обработчик кнопки `Готово`
-    """
-    await message.reply(
-        'Анкета на проверке. Ожидайте результата.',
-        reply_markup=get_keyboard()
-    )
-
-
-async def start_moderation(message: types.Message) -> None:
-    """
-    Начинает формирование анкеты для отправки
-    """
-    profiles = await get_pending_profiles()
-    for profile in profiles:
-        await send_profile_for_moderation(
-            profile,
-            MODERATOR,
-            message.bot
-        )
-        user_id = profile[0]
-        await update_profile_status(user_id, status_check=1)
-        await asyncio.sleep(3)
-    await bot.send_message(MODERATOR, "Все анкеты отправлены для проверки.")
-
-
-async def send_profile_for_moderation(profile, moderator_id, bot) -> None:
-    """
-    Отпавляет профиль пользователя на модерация
-    """
-    user_id = profile[0]
-    name = profile[1]
-    phone = profile[2]
-    organization = profile[3]
-    location = profile[4]
-
-    caption = f"Анкета пользователя:\n\n" \
-              f"Идентификатор пользователя: {user_id}\n" \
-              f"Имя: {name}\n" \
-              f"Телефон: {phone}\n" \
-              f"Организация: {organization}\n" \
-              f"Местоположение: {location}\n\n" \
-
-    await bot.send_message(moderator_id, text=caption,
-                           reply_markup=get_inline_keyboard(user_id))
-
-
-@dp.callback_query_handler(text_contains='approve')
-async def approve_callback_handler(query: types.CallbackQuery) -> None:
-    """
-    Обрабатывает команду модеаратора "Одобрить" и отвечает пользователю
-    """
-    user_id = query.data.split(':')[1]
-    await update_profile_status(user_id, status_check=2)
-    await query.answer("Анкета одобрена.")
-    await bot.edit_message_text(
-        chat_id=query.message.chat.id,
-        message_id=query.message.message_id,
-        text="✅ Заявка одобрена"
-    )
-    await bot.send_message(
-        user_id,
-        text=('Ваша заявка прошла модерацию!\n'
-              'Выберите опцию подписки:'),
-        reply_markup=get_pay_kb(user_id)
-    )
-
-
-@dp.callback_query_handler(text_contains='reject')
-async def reject_callback_handler(query: types.CallbackQuery) -> None:
-    """
-    Обрабатывает команду модератора "Отклонить" и отвечает пользователю
-    """
-    user_id = query.data.split(':')[1]
-    await update_profile_status(user_id, status_check=3)
-    await bot.send_message(
-        user_id,
-        text=("К сожалению Ваша заявка отклонена модератором. \n"
-              "Напишите модератору для получения более детальной информации"
-              f"✉️ USER_NAME_ADMIN"), reply_markup=get_keyboard()
-    )
-    await query.answer("Анкета отклонена.")
-    await bot.edit_message_text(
-        chat_id=query.message.chat.id,
-        message_id=query.message.message_id,
-        text=" ❌ Заявка отклонена"
-    )
+    bot = query.bot
+    action = query.data.split(':')[1]
+    count_employee = query.data.split(':')[2]
+    price = query.data.split(':')[3]
+    user_id = query.data.split(':')[4]
+    room_id = await get_room_id(user_id)
+    current_count_employees = await count_employees_in_room(room_id)
+    if count_employee == 'Безлимит' or int(current_count_employees) <= int(count_employee):
+        await order(query.message,
+                    bot,
+                    f'Подписка на {action}(Сотрудников: {count_employee})',
+                    f'Оформление подписки на {action}',
+                    int(price) * 100)
+        await query.answer(f"Вы выбрали: {action}")
+    else:
+        await bot.answer_callback_query(query.id, text=f"Количество сотрудников превышает лимит тарифа.\nУ Вас сотрудников ({current_count_employees})\n\nПожалуйста, выберите другой тариф.", show_alert=True)
+        # await bot.send_message(user_id,
+            # f"Количество сотрудников превышает лимит тарифа.\nУ Вас сотрудников ({current_count_employees})\n\nПожалуйста, выберите другой тариф.")
 
 
 @dp.callback_query_handler(lambda c: c.data and c.data.startswith('subscribe'))
@@ -760,30 +830,17 @@ async def handle_subscribe_callback(query: types.CallbackQuery) -> None:
     """
     Обрабатывает команды инлайн клавиатуры с тарифами
     """
-    bot = query.bot
-    action, user_id = query.data.split(':')
-    user_status = await get_status(user_id)
+    action = query.data.split(':')[0]
+    user_id = query.data.split(':')[1]
+    user_status = await get_status_check(user_id)
 
-    if user_status and user_status[0][8] != 3:
+    if (user_status and user_status in range(41, 65)) or (user_status and user_status in (4, 6)):
         if action == "subscribe_Месяц":
-            await order(query.message,
-                        bot,
-                        'Подписка на месяц',
-                        'Оформление месячной подписки',
-                        PRICES_IN_RATE[0] * 100)
+            await query.message.edit_reply_markup(reply_markup=get_pay_kb2(user_id, action.split("_")[1], TARIFFS))
         elif action == "subscribe_Квартал":
-            await order(query.message,
-                        bot,
-                        'Подписка на 3 месяца',
-                        'Оформление квартальной подписки',
-                        PRICES_IN_RATE[1] * 100)
+            await query.message.edit_reply_markup(reply_markup=get_pay_kb2(user_id, action.split("_")[1], TARIFFS))
         elif action == "subscribe_Год":
-            await order(query.message,
-                        bot,
-                        'Подписка на год',
-                        'Оформление годовой подписки',
-                        PRICES_IN_RATE[2] * 100)
-        await query.answer(f"Вы выбрали: {action.split('_')[1]}")
+            await query.message.edit_reply_markup(reply_markup=get_pay_kb2(user_id, action.split("_")[1], TARIFFS))
     else:
         await query.answer("У вас нет разрешения на совершение оплаты.")
 
@@ -808,46 +865,18 @@ async def handle_successful_payment(message: Message):
     provider_payment_charge_id = (
         message.successful_payment.provider_payment_charge_id
     )
+    total_amount = message.successful_payment.total_amount
+    tariff_info = TARIFFS[total_amount / 100]
+
     await update_profile_status_payment(user_id, provider_payment_charge_id)
-    if message.successful_payment.total_amount == PRICES_IN_RATE[0] * 100:
-        await update_subscribe_period(user_id, DAYS_IN_RATE[0])
-        await update_end_date(user_id, DAYS_IN_RATE[0])
-        await update_profile_status(user_id, 4)
+    await update_subscribe_period(user_id, tariff_info[1])
+    await update_end_date(user_id, tariff_info[1])
+    await update_profile_status(user_id, tariff_info[2])
 
-    elif message.successful_payment.total_amount == PRICES_IN_RATE[1] * 100:
-        await update_subscribe_period(user_id, DAYS_IN_RATE[1])
-        await update_end_date(user_id, DAYS_IN_RATE[1])
-        await update_profile_status(user_id, 5)
-
-    elif message.successful_payment.total_amount == PRICES_IN_RATE[2] * 100:
-        await update_subscribe_period(user_id, DAYS_IN_RATE[2])
-        await update_end_date(user_id, DAYS_IN_RATE[2])
-        await update_profile_status(user_id, 6)
-
-    has_room = await get_room_id(user_id)
-    prices_in_rate = message.successful_payment.total_amount
-
-    if has_room:
-        admin_status = await get_admin_activity(user_id)
-        if admin_status == 0:
-            await set_admin_activity(user_id, 1)
-        await message.answer(
-            text=f"Ваша подписка успешно продлена на {int(prices_in_rate / 1000)} дней!",
-            reply_markup=get_room_admin_kb()
-        )
-    elif not has_room:
-        await create_new_room(user_id)
-        room_id = await get_room_id(user_id)
-        if room_id:
-            await set_admin_activity(user_id, 1)
-            await message.answer(
-                text=f"Ваша комната успешно создана!\nИдентификатор комнаты: {room_id}\nСохраните его в надежном месте.",
-                reply_markup=get_room_admin_kb()
-            )
-        else:
-            await message.answer(
-                text=f"Ошибка в создании комнаты!",
-                reply_markup=get_keyboard())
+    await message.answer(
+        text=f"Ваша подписка успешно продлена на {tariff_info[1]} дней!",
+        reply_markup=get_room_admin_kb()
+    )
 
 
 @aiocron.crontab('0 10 * * *')
@@ -859,7 +888,7 @@ async def check_subscriptions_and_remind() -> None:
     current_date = datetime.now().date()
     for subscriber in await get_all_subscribers():
         user_id = subscriber[0]
-        end_date_str = subscriber[-2]
+        end_date_str = subscriber[9]
 
         if end_date_str:
             try:
@@ -886,7 +915,7 @@ async def check_subscriptions_and_remind() -> None:
             logging.warning(f"Пустая строка end_date_str для пользователя {user_id}")
 
 
-@aiocron.crontab('45 23 * * *')
+@aiocron.crontab('25 21 * * *')
 async def send_monthly_reports() -> None:
     """
     Отправляеть месячный отчет в PDF файле каждому владельцу компании
@@ -895,13 +924,13 @@ async def send_monthly_reports() -> None:
     for owner in owners:
         await generate_pdf_report(room_id=owner[0])
         file_name = f"report_{owner[0]}.pdf"
-        if os.path.exists(file_name):
+        if path.exists(file_name):
             await bot.send_document(owner[1], document=open(file_name, "rb"))
-            os.remove(file_name)
+            remove(file_name)
             await clear_room_task_completion()
 
 
-@aiocron.crontab('0 0 * * *')
+@aiocron.crontab('23 21 * * *')
 async def update_tasks_status():
     """
     Сохраняет данные за прошедший день и сбрасываеет статусы заданий

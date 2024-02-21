@@ -134,17 +134,6 @@ async def get_pending_profiles():
         logger.error(f"Database error in get_pending_profiles: {e}")
 
 
-async def get_status(user_id):
-    try:
-        async with aiosqlite.connect('users.db') as db:
-            cursor = await db.execute("""
-            SELECT * FROM profile WHERE user_id = ?
-            """, (user_id,))
-            return await cursor.fetchall()
-    except Exception as e:
-        logger.error(f"Database error in get_status: {e}")
-
-
 async def get_all_subscribers():
     try:
         async with aiosqlite.connect('users.db') as db:
@@ -166,6 +155,18 @@ async def update_profile_status(user_id, status_check):
             logger.info(f"Profile status updated successfully for user_id: {user_id}")
     except Exception as e:
         logger.error(f"Error updating profile status for user_id {user_id}: {e}")
+
+
+async def get_status_check(user_id):
+    try:
+        async with aiosqlite.connect('users.db') as db:
+            cursor = await db.execute("""
+            SELECT status_check FROM profile WHERE user_id = ?
+            """, (user_id,))
+            status_check = await cursor.fetchone()
+            return status_check[0] if status_check else None
+    except Exception as e:
+        logger.error(f"Database error in get_all_subscribers: {e}")
 
 
 async def update_profile_status_payment(user_id, payment):
@@ -484,9 +485,15 @@ async def get_all_room_owners():
 async def remove_employee(employee_id, room_id):
     try:
         async with aiosqlite.connect('users.db') as db:
-            await db.execute("DELETE FROM checklist WHERE employee_id = ? AND room_id = ? AND task_type = 'user'",
-                             (employee_id, room_id))
-            await db.execute("DELETE FROM employee WHERE employee_id = ? AND room_id = ?", (employee_id, room_id))
+            await db.execute(
+                "DELETE FROM checklist WHERE employee_id = ? AND room_id = ? AND task_type = 'user'",
+                (employee_id, room_id))
+            await db.execute(
+                "UPDATE checklist SET employee_id = NULL, task_status = 0 WHERE employee_id = ?",
+                (employee_id,))
+            await db.execute(
+                "DELETE FROM employee WHERE employee_id = ? AND room_id = ?",
+                (employee_id, room_id))
             await db.commit()
             logger.info(
                 f"All tasks of employee with ID {employee_id} and the employee himself have been removed successfully.")
@@ -510,13 +517,24 @@ async def block_user_access(user_id: int) -> None:
         async with aiosqlite.connect('users.db') as db:
             await db.execute("""
                 UPDATE profile
-                SET status_check = 8, status_payment = 8, subscribe_period = 8
+                SET status_check = 6
                 WHERE user_id = ?
             """, (user_id,))
             await db.commit()
             logger.info(f"User {user_id} access to the room has been blocked.")
     except Exception as e:
         logger.error(f"Error blocking user {user_id} access to the room: {e}")
+
+
+async def count_employees_in_room(room_id):
+    try:
+        async with aiosqlite.connect('users.db') as db:
+            cursor = await db.execute("SELECT COUNT(*) FROM employee WHERE room_id = ?", (room_id,))
+            count = await cursor.fetchone()
+            return count[0]  # Возвращаем количество сотрудников в комнате
+    except Exception as e:
+        logger.error(f"Error counting employees in room {room_id}: {e}")
+        return None
 
 
 async def clear_room_task_completion():
@@ -576,60 +594,72 @@ async def reset_task_status():
         logger.error(e)
 
 
-async def get_data_for_report(room_id):
+async def get_report_data_for_room(room_id):
     async with aiosqlite.connect('users.db') as db:
         cursor = await db.execute("SELECT * FROM room_task_completion WHERE room_id = ? AND task_type = 'room'",
                                   (room_id,))
         room_data = await cursor.fetchall()
-        data = {}
-        data['total_tasks_added'] = len(room_data)
-        data['total_tasks_incomplete'] = sum([1 for i in room_data if not i[1]])
-        employees_completed_tasks = {}
-        for i in room_data:
-            if i[1]:
-                if i[1] not in employees_completed_tasks:
-                    employees_completed_tasks[i[1]] = [i[2], 1]
-                else:
-                    employees_completed_tasks[i[1]][1] += 1
-        data['employees_completed_tasks'] = employees_completed_tasks
-        data['total_tasks_completed'] = sum(employees_completed_tasks[i][1] for i in employees_completed_tasks)
 
+        employees_completed_tasks = {}
         daily_graf = {}
         for i in room_data:
-            if i[4] not in daily_graf:
-                daily_graf[i[4]] = {}
-                if i[1]:
-                    daily_graf[i[4]][i[1]] = [i[2], 1]
-                    daily_graf[i[4]]['incomplete'] = 0
-                else:
-                    daily_graf[i[4]]['incomplete'] = 1
+            user_id = i[1]
+            name = i[2]
+            date = i[4]
 
-            else:
-                if i[1]:
-                    if i[1] not in daily_graf[i[4]]:
-                        daily_graf[i[4]][i[1]] = [i[2], 1]
-                    else:
-                        daily_graf[i[4]][i[1]][1] += 1
+            if user_id:
+                if user_id not in employees_completed_tasks:
+                    employees_completed_tasks[user_id] = [name, 1]
                 else:
-                    daily_graf[i[4]]['incomplete'] += 1
-        data['daily_graf'] = daily_graf
-        cursor = await db.execute("SELECT * FROM room_task_completion WHERE room_id = ? AND task_type = 'user'",
+                    employees_completed_tasks[user_id][1] += 1
+            if date not in daily_graf:
+                daily_graf[date] = {}
+                if user_id:
+                    daily_graf[date][user_id] = [name, 1]
+                    daily_graf[date]['incomplete'] = 0
+                else:
+                    daily_graf[date]['incomplete'] = 1
+
+            elif date in daily_graf:
+                if user_id:
+                    if user_id not in daily_graf[date]:
+                        daily_graf[date][user_id] = [name, 1]
+                    else:
+                        daily_graf[date][user_id][1] += 1
+                else:
+                    daily_graf[date]['incomplete'] += 1
+
+        data = {
+            'total_tasks_added': len(room_data),
+            'total_tasks_incomplete': sum([1 for i in room_data if not i[1]]),
+            'employees_completed_tasks': employees_completed_tasks,
+            'total_tasks_completed': sum(employees_completed_tasks[i][1] for i in employees_completed_tasks),
+            'daily_graf': daily_graf
+        }
+        return data
+
+
+async def get_report_data_for_employee(room_id):
+    async with aiosqlite.connect('users.db') as db:
+        cursor = await db.execute("""SELECT * FROM room_task_completion WHERE room_id = ? AND task_type = 'user'""",
                                   (room_id,))
         tasks = await cursor.fetchall()
-        employee_data = {}
+        data = {}
+        # data = {'employee_id': [employee_name, complete_task, incomplete_task]}
 
         for task in tasks:
             employee_id = task[1]
-            task_status = int(task[6])  # Преобразуем строку статуса в целое число
-            if employee_id in employee_data:
+            task_status = int(task[6])
+            employee_name = task[2]
+
+            if employee_id in data:
                 if task_status == 1:
-                    employee_data[employee_id][1] += 1  # Увеличиваем количество выполненных задач
+                    data[employee_id][1] += 1
                 else:
-                    employee_data[employee_id][2] += 1  # Увеличиваем количество невыполненных задач
+                    data[employee_id][2] += 1
             else:
                 if task_status == 1:
-                    employee_data[employee_id] = [task[2], 1, 0]
+                    data[employee_id] = [employee_name, 1, 0]
                 else:
-                    employee_data[employee_id] = [task[2], 0, 1]
-        data['employees'] = employee_data
+                    data[employee_id] = [employee_name, 0, 1]
         return data

@@ -1,23 +1,21 @@
-import asyncio
-import datetime
 import os
 
 from fpdf import FPDF
 import matplotlib.pyplot as plt
-from async_sqlite import get_data_for_report
+from async_sqlite import get_report_data_for_room, get_report_data_for_employee
 
 
 async def generate_pdf_report(room_id):
-    data = await get_data_for_report(room_id)
-
-    total_tasks_added = data['total_tasks_added']
-    total_tasks_completed = data['total_tasks_completed']
-    total_tasks_incomplete = data['total_tasks_incomplete']
-    employees_completed_tasks = data['employees_completed_tasks']
-    employees = data['employees']
+    room = await get_report_data_for_room(room_id)
+    employees = await get_report_data_for_employee(room_id)
+    print(room, '\n\n\n\n\n', employees)
+    total_tasks_added = room['total_tasks_added']
+    total_tasks_completed = room['total_tasks_completed']
+    total_tasks_incomplete = room['total_tasks_incomplete']
+    employees_completed_tasks = room['employees_completed_tasks']
     await draw_room_pie(total_tasks_incomplete, employees_completed_tasks, room_id)
     await draw_bar_for_employees(employees, room_id)
-    await draw_daily_graph(data['daily_graf'])
+    await draw_daily_graph(room['daily_graf'], room_id)
     pdf = FPDF()
     pdf.add_page()
     pdf.add_font('DejaVu', '', 'fpdf_font/DejaVuSansCondensed.ttf', uni=True)
@@ -39,7 +37,7 @@ async def generate_pdf_report(room_id):
     pdf.set_xy(x_now + 110, pdf.get_y())
     pdf.cell(200, 7, txt=f'Не выполненных задач: {total_tasks_incomplete}', ln=True)
     pdf.set_xy(x_now - 5, pdf.get_y()+50)
-    pdf.image('daily_graph.png', w=200, h=150)
+    pdf.image(f'daily_graph{room_id}.png', w=200, h=150)
     pdf.set_font('DejaVu', '', 25)
     pdf.set_y(pdf.get_y() + 50)
     pdf.cell(200, 10, txt="По сотрудникам", ln=True, align="C")
@@ -78,7 +76,7 @@ async def generate_pdf_report(room_id):
     pdf.output(f"report_{room_id}.pdf", dest='S')
     os.remove(f'{room_id}_pie.png')
     os.remove(f'{room_id}_bar.png')
-    os.remove('daily_graph.png')
+    os.remove(f'daily_graph{room_id}.png')
 
 
 async def draw_room_pie(total_tasks_incomplete, employees_completed_tasks, room_id):
@@ -116,7 +114,7 @@ async def draw_bar_for_employees(employees_data, room_id):
     plt.close()
 
 
-async def draw_daily_graph(data):
+async def draw_daily_graph(data, room_id):
     days = [date[8:] for date in data.keys()]
 
     employees = sorted(set(employee for day_data in data.values() for employee in day_data if employee != 'incomplete'))
@@ -124,7 +122,6 @@ async def draw_daily_graph(data):
     completed_tasks = [[] for _ in range(len(employees))]
     incomplete_tasks = []
 
-    # Извлекаем имена сотрудников из данных
     employee_names = {employee: day_data[employee][0] for day_data in data.values() for employee in day_data if employee != 'incomplete'}
 
     for day_data in data.values():
@@ -145,33 +142,12 @@ async def draw_daily_graph(data):
 
     # Столбик для невыполненных задач
     ax.bar(days, incomplete_tasks, bottom=bottom, color='grey', label='Не выполнено')
-    month_names_ru = {
-        1: "Январь",
-        2: "Февраль",
-        3: "Март",
-        4: "Апрель",
-        5: "Май",
-        6: "Июнь",
-        7: "Июль",
-        8: "Август",
-        9: "Сентябрь",
-        10: "Октябрь",
-        11: "Ноябрь",
-        12: "Декабрь"
-    }
-    current_date = datetime.datetime.now()
 
-    # Get number of the previous month
-    previous_month = current_date.month - 1 if current_date.month > 1 else 12
-
-    # Get the name of the previous month
-    previous_month_name = month_names_ru[previous_month]
-    ax.set_xlabel(previous_month_name)
     ax.set_ylabel('Количество задач')
     ax.set_title('Статистика выполненных и невыполненных задач по дням')
     ax.legend()
 
     plt.xticks(ha='right')
     plt.tight_layout()
-    plt.savefig('daily_graph.png')
+    plt.savefig(f'daily_graph{room_id}.png')
     plt.close()
