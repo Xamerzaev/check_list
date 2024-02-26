@@ -2,7 +2,7 @@ import os
 
 from fpdf import FPDF
 import matplotlib.pyplot as plt
-from async_sqlite import get_report_data_for_room, get_report_data_for_employee
+from services.sql import get_report_data_for_room, get_report_data_for_employee
 
 
 async def generate_pdf_report(room_id):
@@ -17,8 +17,8 @@ async def generate_pdf_report(room_id):
     await draw_daily_graph(room['daily_graf'], room_id)
     pdf = FPDF()
     pdf.add_page()
-    pdf.add_font('DejaVu', '', 'fpdf_font/DejaVuSansCondensed.ttf', uni=True)
-    pdf.add_font('DejaVu', 'B', 'fpdf_font/DejaVuSansCondensed-Bold.ttf', uni=True)
+    pdf.add_font('DejaVu', '', 'fonts/DejaVuSansCondensed.ttf', uni=True)
+    pdf.add_font('DejaVu', 'B', 'fonts/DejaVuSansCondensed-Bold.ttf', uni=True)
 
     pdf.set_font('DejaVu', '', 25)
 
@@ -65,7 +65,7 @@ async def generate_pdf_report(room_id):
         <td>{total_tasks}</td>
         <td>{completed_tasks}</td>
         <td>{employees[employee][2]}</td>
-        <td>{completion_percentage}</td>
+        <td>{int(completion_percentage)}</td>
       </tr>
     """
     html += """

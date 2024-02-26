@@ -1,15 +1,11 @@
+import logging
+
 from aiogram import Bot
 from aiogram.types import Message, LabeledPrice
-from dotenv import load_dotenv
-from os import getenv
+from config import PROVIDER_TOKEN
 
 
-load_dotenv()
-PROVIDER_TOKEN = getenv("PROVIDER_TOKEN")
-
-
-async def order(message: Message, bot: Bot, title: str,
-                description: str, amount: int):
+async def order(message: Message, bot: Bot, title: str, description: str, amount: int):
     try:
         prices = [LabeledPrice(label=description, amount=amount)]
         await bot.send_invoice(
@@ -33,4 +29,4 @@ async def order(message: Message, bot: Bot, title: str,
             reply_markup=None
         )
     except Exception as e:
-        print(e)
+        logging.error(f'order: {e}')

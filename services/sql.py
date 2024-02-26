@@ -1,10 +1,8 @@
-import asyncio
+import random
 from datetime import datetime, timedelta
 
-import aiocron
 import aiosqlite
 import logging
-import secrets
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s:%(message)s')
 logger = logging.getLogger(__name__)
@@ -64,12 +62,12 @@ async def db_start():
             """)
 
             await db.execute("""
-            CREATE TABLE IF NOT EXISTS room_task_completion (
+            CREATE TABLE IF NOT EXISTS task_completion (
             completion_id INTEGER PRIMARY KEY AUTOINCREMENT,
             employee_id TEXT,
             employee_name TEXT,
             room_id TEXT,
-            completion_date DATE DEFAULT (date('now')),
+            date DATE DEFAULT (date('now')),
             task_type TEXT,
             task_status TEXT DEFAULT NULL,
             FOREIGN KEY (employee_id) REFERENCES employee(employee_id) ON DELETE CASCADE
@@ -227,19 +225,23 @@ async def update_end_date(user_id, days):
 
 async def create_new_room(user_id):
     try:
+        new_room_id = random.randint(10 ** 5, 10 ** 6)
+
+        while True:
+            existing_room = await get_room_by_id(new_room_id)
+            if existing_room:
+                new_room_id = random.randint(10 ** 5, 10 ** 6)
+            else:
+                break
+
         async with aiosqlite.connect('users.db') as db:
-            new_room_id = secrets.randbelow(10 ** 6)
-            existing_room = await get_room_id(user_id)
-            if not existing_room:
-                if new_room_id != existing_room:
-                    await db.execute("""
-                    INSERT INTO room (room_id, creator_user_id)
-                    VALUES (?, ?)
-                    """, (new_room_id, user_id))
-                    await db.commit()
-                    logger.info(f"Room created for user_id: {user_id}")
-                else:
-                    logger.info("Room with such ID already exists")
+            await db.execute("""
+            INSERT INTO room (room_id, creator_user_id)
+            VALUES (?, ?)
+            """, (new_room_id, user_id))
+            await db.commit()
+            logger.info(f"Room {new_room_id} created for user_id: {user_id}")
+
     except Exception as e:
         logger.error(f"Error creating room for user_id {user_id}: {e}")
 
@@ -382,7 +384,7 @@ async def get_room_id_by_employee_id(employee_id):
             return row[0] if row else None
 
     except Exception as e:
-        logger.error(f"Error fetching room_id by employee_id: {e}")
+        logger.error(f"Database error in get_room_id_by_employee_id: {e}")
 
 
 async def change_task_status(task_id, user_id):
@@ -391,32 +393,30 @@ async def change_task_status(task_id, user_id):
             cursor = await db.execute("SELECT * FROM checklist WHERE checklist_id = ?", (task_id,))
             checklist_id_data = await cursor.fetchone()
             task_for = checklist_id_data[5]
+            task_status = checklist_id_data[4]
+
             if task_for == 'room':
-                if checklist_id_data[4] == '0':
-                    new_status = '1'
+                if task_status == '0':
                     await db.execute(
-                        "UPDATE checklist SET task_status = ?, employee_id = ?  WHERE checklist_id = ?",
-                        (new_status, user_id, task_id,))
+                        "UPDATE checklist SET task_status = 1, employee_id = ?  WHERE checklist_id = ?",
+                        (user_id, task_id,))
                 else:
-                    new_status = '0'
                     await db.execute(
-                        "UPDATE checklist SET task_status = ?, employee_id = NULL  WHERE checklist_id = ?",
-                        (new_status, task_id,))
+                        "UPDATE checklist SET task_status = 0, employee_id = NULL  WHERE checklist_id = ?",
+                        (task_id,))
 
             elif task_for == 'user':
-                if checklist_id_data[4] == '0':
-                    new_status = '1'
+                if task_status == '0':
                     await db.execute(
-                        "UPDATE checklist SET task_status = ?, employee_id = ? WHERE checklist_id = ?",
-                        (new_status, user_id, task_id,))
+                        "UPDATE checklist SET task_status = 1, employee_id = ? WHERE checklist_id = ?",
+                        (user_id, task_id,))
                 else:
-                    new_status = '0'
                     await db.execute(
-                        "UPDATE checklist SET task_status = ? WHERE checklist_id = ?",
-                        (new_status, task_id,))
+                        "UPDATE checklist SET task_status = 0 WHERE checklist_id = ?",
+                        (task_id,))
 
             await db.commit()
-            logger.info(f"Task {task_id} status toggled: {new_status}")
+            logger.info(f"Task {task_id} status toggled.")
 
     except Exception as e:
         logger.error(f"Error toggling task status for task {task_id}: {e}")
@@ -472,14 +472,14 @@ async def set_admin_activity(user_id, is_active):
         logger.error(f"Error updating user activity: {e}")
 
 
-async def get_all_room_owners():
+async def get_room_owners():
     try:
         async with aiosqlite.connect('users.db') as db:
             cursor = await db.execute("SELECT * FROM room")
             owners = await cursor.fetchall()
             return owners
     except Exception as e:
-        logger.error(f"Error getting room owners: {e}")
+        logger.error(f"Database error in get_room_owners: {e}")
 
 
 async def remove_employee(employee_id, room_id):
@@ -489,10 +489,13 @@ async def remove_employee(employee_id, room_id):
                 "DELETE FROM checklist WHERE employee_id = ? AND room_id = ? AND task_type = 'user'",
                 (employee_id, room_id))
             await db.execute(
-                "UPDATE checklist SET employee_id = NULL, task_status = 0 WHERE employee_id = ?",
+                "UPDATE checklist SET employee_id = NULL, task_status = 0 WHERE employee_id = ? AND task_type = 'room'",
                 (employee_id,))
             await db.execute(
                 "DELETE FROM employee WHERE employee_id = ? AND room_id = ?",
+                (employee_id, room_id))
+            await db.execute(
+                "DELETE FROM task_completion WHERE employee_id = ? AND room_id = ?",
                 (employee_id, room_id))
             await db.commit()
             logger.info(
@@ -531,20 +534,19 @@ async def count_employees_in_room(room_id):
         async with aiosqlite.connect('users.db') as db:
             cursor = await db.execute("SELECT COUNT(*) FROM employee WHERE room_id = ?", (room_id,))
             count = await cursor.fetchone()
-            return count[0]  # Возвращаем количество сотрудников в комнате
+            return count[0]
     except Exception as e:
-        logger.error(f"Error counting employees in room {room_id}: {e}")
-        return None
+        logger.error(f"Database error in count_employees_in_room {room_id}: {e}")
 
 
-async def clear_room_task_completion():
+async def clear_task_completion():
     try:
         async with aiosqlite.connect('users.db') as db:
-            await db.execute("DELETE FROM room_task_completion")
+            await db.execute("DELETE FROM task_completion")
             await db.commit()
-            print("Все записи из таблицы room_task_completion удалены.")
+            logger.info("All records from the task_completion table have been deleted.")
     except Exception as e:
-        print(f"Ошибка при удалении записей из таблицы room_task_completion: {e}")
+        logger.error(f"Error deleting records from the task_completion table: {e}")
 
 
 async def get_employee_name(employee_id):
@@ -554,7 +556,7 @@ async def get_employee_name(employee_id):
             employee_name = await cursor.fetchone()
             return employee_name[0] if employee_name else None
     except Exception as e:
-        logging.error(f"Error getting employee name: {e}")
+        logging.error(f"Database error in get_employee_name: {e}")
 
 
 async def reset_task_status():
@@ -563,6 +565,7 @@ async def reset_task_status():
             cursor = await db.execute("SELECT * FROM checklist")
             tasks = await cursor.fetchall()
             for task in tasks:
+
                 if task[5] == 'room':
                     task_status = task[4]
                     room_id = task[1]
@@ -570,33 +573,34 @@ async def reset_task_status():
                         employee_id = task[2]
                         employee_name = await get_employee_name(employee_id)
                         await db.execute(
-                            "INSERT INTO room_task_completion (employee_id, employee_name, room_id, task_type) VALUES (?, ?, ?, 'room')",
+                            "INSERT INTO task_completion (employee_id, employee_name, room_id, task_type) VALUES (?, ?, ?, 'room')",
                             (employee_id, employee_name, room_id))
                     else:
                         await db.execute("""
-                            INSERT INTO room_task_completion (employee_id, employee_name, room_id, task_for)
+                            INSERT INTO task_completion (employee_id, employee_name, room_id, task_for)
                             VALUES (NULL, NULL, ?, 'room')
                         """, (room_id,))
                     await db.execute(
                         "UPDATE checklist SET task_status = 0, employee_id = NULL WHERE task_type = 'room'")
+
                 elif task[5] == 'user':
                     task_status = task[4]
                     room_id = task[1]
                     employee_id = task[2]
                     employee_name = await get_employee_name(employee_id)
                     await db.execute(
-                        "INSERT INTO room_task_completion (employee_id, employee_name, room_id, task_type, task_status) VALUES (?, ?, ?, 'user', ?)",
+                        "INSERT INTO task_completion (employee_id, employee_name, room_id, task_type, task_status) VALUES (?, ?, ?, 'user', ?)",
                         (employee_id, employee_name, room_id, task_status))
                     await db.execute("UPDATE checklist SET task_status = 0")
-
             await db.commit()
+            logging.info(f'Tasks status have been updated')
     except Exception as e:
-        logger.error(e)
+        logging.error(f'Error reset_task_status {e}')
 
 
 async def get_report_data_for_room(room_id):
     async with aiosqlite.connect('users.db') as db:
-        cursor = await db.execute("SELECT * FROM room_task_completion WHERE room_id = ? AND task_type = 'room'",
+        cursor = await db.execute("SELECT * FROM task_completion WHERE room_id = ? AND task_type = 'room'",
                                   (room_id,))
         room_data = await cursor.fetchall()
 
@@ -641,7 +645,7 @@ async def get_report_data_for_room(room_id):
 
 async def get_report_data_for_employee(room_id):
     async with aiosqlite.connect('users.db') as db:
-        cursor = await db.execute("""SELECT * FROM room_task_completion WHERE room_id = ? AND task_type = 'user'""",
+        cursor = await db.execute("""SELECT * FROM task_completion WHERE room_id = ? AND task_type = 'user'""",
                                   (room_id,))
         tasks = await cursor.fetchall()
         data = {}
