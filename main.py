@@ -18,4 +18,3 @@ async def on_startup(_):
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, stream=sys.stdout)
     executor.start_polling(dp, skip_updates=True, on_startup=on_startup)
-

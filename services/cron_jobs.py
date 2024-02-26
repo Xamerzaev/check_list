@@ -42,10 +42,10 @@ async def check_subscriptions_and_remind() -> None:
                     await set_admin_activity(user_id, 0)
                     try:
                         await bot.send_message(user_id,
-                                               text='Внимание! Ваш доступ к комнате был заблокирован',
+                                               text='Внимание! Ваш доступ к комнате был заблокирован.',
                                                reply_markup=get_keyboard())
                         await bot.send_message(user_id,
-                                               text='Вы также можете продлить подписку',
+                                               text='Вы также можете продлить подписку.',
                                                reply_markup=get_pay_kb(user_id))
                     except BotBlocked as e:
                         logging.info(f'{user_id}: {e}')

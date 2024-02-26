@@ -2,8 +2,10 @@ import asyncio
 import logging
 
 from aiogram.utils.exceptions import BotBlocked
+from aiogram.dispatcher import FSMContext
+from aiogram import types
 
-from loader import bot
+from loader import bot, dp
 from config import MODERATOR, TARIFFS
 from keyboards.inline_keyboards import get_inline_keyboard, get_join_room_request_kb, get_pay_kb
 from services.sql import get_pending_profiles, update_profile_status, count_employees_in_room, get_status_check, \
@@ -28,7 +30,7 @@ async def start_moderation() -> None:
 
 async def send_profile_for_moderation(profile, moderator_id) -> None:
     """
-    Отпавляет профиль пользователя на модерация
+    Отправляет профиль пользователя на модерация
     """
     user_id = profile[0]
     name = profile[1]
@@ -49,7 +51,7 @@ async def send_profile_for_moderation(profile, moderator_id) -> None:
 
 async def send_request_entry_to_room(user_id, employee_name, owner_id, room_id) -> None:
     """
-    Отпавляет запрос владельцу на присоединение в комнату
+    Отправляет запрос владельцу на присоединение в комнату
     """
     count_employees = await count_employees_in_room(room_id)
     status_check = await get_status_check(owner_id)
@@ -57,7 +59,7 @@ async def send_request_entry_to_room(user_id, employee_name, owner_id, room_id) 
         try:
             await bot.send_message(
                 owner_id,
-                text=f'Пользователь: {employee_name} хочет присоединиться в вашу комнату',
+                text=f'Пользователь {employee_name} хочет присоединиться в вашу комнату',
                 reply_markup=get_join_room_request_kb(user_id, room_id, employee_name)
             )
         except BotBlocked as e:
@@ -69,7 +71,7 @@ async def send_request_entry_to_room(user_id, employee_name, owner_id, room_id) 
                 try:
                     await bot.send_message(
                         owner_id,
-                        text=f'Пользователь: {employee_name} хочет присоединиться в вашу комнату',
+                        text=f'Пользователь {employee_name} хочет присоединиться в вашу комнату',
                         reply_markup=get_join_room_request_kb(user_id, room_id, employee_name)
                     )
                 except BotBlocked as e:
@@ -78,9 +80,9 @@ async def send_request_entry_to_room(user_id, employee_name, owner_id, room_id) 
         try:
             await bot.send_message(
                 owner_id,
-                text=f'Пользователь: {employee_name} хочет присоединиться в вашу комнату!\n'
-                     f'Вы не можете принять либо отклонить так как у вас превышен лимит сотрудников!\n'
-                     f'Вы можете подписаться',
+                text=f'Пользователь {employee_name} хочет присоединиться в вашу комнату!\n'
+                     f'Вы не можете принять либо отклонить, так как у вас превышен лимит сотрудников!\n'
+                     f'Вы можете улучшить подписку и попросить повторить попытку сотрудника.',
                 reply_markup=get_pay_kb(owner_id)
             )
         except BotBlocked as e:
@@ -95,13 +97,11 @@ async def send_task_notification(room_id, task_description, task_for, user_id=No
         employees = await get_employees(room_id)
         for employee_id in employees:
             try:
-                await bot.send_message(employee_id[0], f"Добавлено новое дело в комнату: {task_description}")
+                await bot.send_message(employee_id[0], f"✅ Добавлено новое дело в комнату: {task_description}")
             except BotBlocked as e:
                 logging.info(f'{employee_id[0]}: {e}')
     elif task_for == 'user' and user_id:
         try:
-            await bot.send_message(user_id, f"Добавлено новое дело для вас: {task_description}")
+            await bot.send_message(user_id, f"✅ Добавлено новое дело для вас: {task_description}")
         except BotBlocked as e:
             logging.info(f'{user_id}: {e}')
-
-
