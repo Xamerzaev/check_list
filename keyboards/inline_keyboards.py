@@ -87,7 +87,7 @@ def get_employee_checklist_for_admin_kb(checklist_for_user, room_id, employee_id
         ]
         kb.add(*task_row)
     kb.add(InlineKeyboardButton("Добавить задание", callback_data=f"add_task:user:{room_id}:{employee_id}"))
-    kb.add(InlineKeyboardButton("Назад", callback_data=f"back:{room_id}:{room_id}"))
+    kb.add(InlineKeyboardButton("Назад", callback_data=f"back:room:{room_id}"))
 
     return kb
 
@@ -110,9 +110,9 @@ def get_room_checklist_for_employee_kb(checklist) -> InlineKeyboardMarkup:
     kb = InlineKeyboardMarkup()
     for task in checklist:
         if task[4] == '1':
-            kb.add(InlineKeyboardButton(text=f"{task[3]} ✅", callback_data=f"task_status:room:{task[0]}:{task[1]}"))
+            kb.add(InlineKeyboardButton(text=f"✅ {task[3]}", callback_data=f"task_info:room:{task[0]}:{task[1]}"))
         else:
-            kb.add(InlineKeyboardButton(text=task[3], callback_data=f"task_status:room:{task[0]}:{task[1]}"))
+            kb.add(InlineKeyboardButton(text=task[3], callback_data=f"task_info:room:{task[0]}:{task[1]}"))
 
     return kb
 
@@ -121,8 +121,19 @@ def get_my_checklist_for_employee_kb(checklist) -> InlineKeyboardMarkup:
     kb = InlineKeyboardMarkup()
     for task in checklist:
         if task[4] == '1':
-            kb.add(InlineKeyboardButton(text=f"{task[3]} ✅", callback_data=f"task_status:user:{task[0]}:{task[1]}"))
+            kb.add(InlineKeyboardButton(text=f"✅ {task[3]}", callback_data=f"task_info:user:{task[0]}:{task[1]}"))
         else:
-            kb.add(InlineKeyboardButton(text=task[3], callback_data=f"task_status:user:{task[0]}:{task[1]}"))
+            kb.add(InlineKeyboardButton(text=task[3], callback_data=f"task_info:user:{task[0]}:{task[1]}"))
+
+    return kb
+
+
+def get_task_info_kb(task):
+    kb = InlineKeyboardMarkup()
+    if task[4] == '1':
+        kb.add(InlineKeyboardButton(text="❌", callback_data=f"task_status:{task[5]}:{task[0]}:{task[1]}"))
+    else:
+        kb.add(InlineKeyboardButton(text="✅", callback_data=f"task_status:{task[5]}:{task[0]}:{task[1]}"))
+    kb.add(InlineKeyboardButton("Назад", callback_data=f"back:{task[5]}_checklist:{task[1]}:{task[2]}"))
 
     return kb

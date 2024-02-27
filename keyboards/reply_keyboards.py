@@ -45,7 +45,7 @@ def get_room_admin_kb() -> ReplyKeyboardMarkup:
 def get_room_employee_kb() -> ReplyKeyboardMarkup:
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
     kb.add(
-        KeyboardButton('Общий Чек-лист'),
+        KeyboardButton('Чек-лист'),
         KeyboardButton('Мой Чек-лист'),
         KeyboardButton('Выход')
     )

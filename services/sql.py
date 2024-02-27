@@ -559,6 +559,16 @@ async def get_employee_name(employee_id):
         logging.error(f"Database error in get_employee_name: {e}")
 
 
+async def get_task(task_id):
+    try:
+        async with aiosqlite.connect('users.db') as db:
+            cursor = await db.execute("SELECT * FROM checklist WHERE checklist_id = ?", (task_id,))
+            task_description = await cursor.fetchone()
+            return task_description
+    except Exception as e:
+        logging.error(f"Database error in get_task: {e}")
+
+
 async def reset_task_status():
     try:
         async with aiosqlite.connect('users.db') as db:

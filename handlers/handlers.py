@@ -1,3 +1,5 @@
+import re
+
 from aiogram.utils.exceptions import BotBlocked
 import logging
 
@@ -23,7 +25,7 @@ from services.sql import (
     get_employee_activity, get_room_id_by_employee_id, change_task_status,
     get_current_end_date, remove_employee, get_room_task_status,
     get_employee_name, count_employees_in_room,
-    get_status_check
+    get_status_check, get_task
 )
 from keyboards.reply_keyboards import (
     get_keyboard, get_cancel_keyboard,
@@ -33,13 +35,9 @@ from keyboards.inline_keyboards import (
     get_pay_kb, get_employees_kb,
     get_employee_checklist_for_admin_kb, get_room_checklist_for_admin_kb,
     get_room_checklist_for_employee_kb, get_my_checklist_for_employee_kb,
-    get_pay_kb2
+    get_pay_kb2, get_task_info_kb
 )
 from loader import bot
-import re
-
-
-phone_number_pattern = re.compile(r'^\+?[1-9]\d{1,14}$')
 
 
 async def btn_cancel(message: types.Message, state: FSMContext):
@@ -133,7 +131,7 @@ async def cmd_help(message: types.Message) -> None:
     """
     Обработчик кнопки `Помощь`
     """
-    await message.reply(HELP_MESSAGE.format(name=USER_NAME_ADMIN))
+    await message.reply(HELP_MESSAGE)
 
 
 async def btn_create_company(message: types.Message) -> None:
@@ -153,12 +151,8 @@ async def load_name(message: types.Message, state: FSMContext) -> None:
     """
     async with state.proxy() as data:
         data['name'] = message.text
-        keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
-        button = types.KeyboardButton(text="Отправить номер телефона", request_contact=True)
-        keyboard.add(button)
         await message.reply(
-            'Предоставьте ваш номер для связи',
-            reply_markup=keyboard
+            'Предоставьте ваш номер для связи'
         )
         await ProfileStateGroup.phone.set()
 
@@ -167,22 +161,20 @@ async def load_phone(message: types.Message, state: FSMContext) -> None:
     """
     Обработчик номера телефона
     """
-    if phone_number_pattern.match(message.contact.phone_number):
-        await message.bot.send_chat_action(message.chat.id, ChatActions.TYPING)
-        await asyncio.sleep(1)
-        await message.answer(
-            text='Спасибо, ваш номер телефона принят.',
-            reply_markup=types.ReplyKeyboardRemove()
-        )
-        async with state.proxy() as data:
-            data['phone'] = message.contact.phone_number
-            await message.reply(
-                'Напишите название Вашей компании.'
-            )
+    async with state.proxy() as data:
+        phone_pattern = r'^(\+?7|8)?(\d{10})$'
+        if re.match(phone_pattern, message.text):
+            if message.text.startswith("+7"):
+                data['phone'] = message.text
+            elif message.text.startswith("7"):
+                data['phone'] = "+" + message.text
+            elif message.text.startswith("8"):
+                data['phone'] = "+7" + message.text[1:]
+
+            await message.reply('Напишите название Вашей компании.')
             await ProfileStateGroup.organization.set()
-    else:
-        await message.answer('Кажется, это неверный номер. Попробуйте еще раз.')
-        return
+        else:
+            await message.reply("Номер телефона должен начинаться с +7, 7 или 8. Пожалуйста, введите корректный номер.")
 
 
 async def load_organization(message: types.Message, state: FSMContext) -> None:
@@ -408,7 +400,7 @@ async def btn_my_subscription(message: types.Message) -> None:
         else:
             await bot.send_message(
                 user_id,
-                text=f"Вы находитель в тестовом режиме с возможностью добавления одного сотрудника\n\nВы также можете сменить подписку:",
+                text=f"Вы находитель в тестовом режиме с возможностью добавления 1го сотрудника\n\nВы также можете сменить подписку:",
                 reply_markup=get_pay_kb(user_id))
 
 
@@ -424,7 +416,7 @@ async def btn_checklist(message: types.Message) -> None:
         checklist = await get_checklist_for_room(room_id)
         await bot.send_message(
             message.from_user.id,
-            text="Общий Чек-лист",
+            text="Чек-лист",
             reply_markup=get_room_checklist_for_admin_kb(checklist, room_id))
 
     elif employee_status:
@@ -433,12 +425,12 @@ async def btn_checklist(message: types.Message) -> None:
         if checklist:
             await bot.send_message(
                 message.from_user.id,
-                text="Общий Чек-лист",
+                text="Чек-лист",
                 reply_markup=get_room_checklist_for_employee_kb(checklist))
         else:
             await bot.send_message(
                 message.from_user.id,
-                text="Общий Чек-лист пуст, ожидайте заданий!", )
+                text="Чек-лист пуст", )
 
 
 async def btn_my_checklist(message: types.Message) -> None:
@@ -458,7 +450,7 @@ async def btn_my_checklist(message: types.Message) -> None:
             else:
                 await bot.send_message(
                     message.from_user.id,
-                    text="У тебя еще нет заданий, посмотри что в общем чек-листе.", )
+                    text="Мой Чек-лист пуст", )
 
 
 async def employee_checklist_for_admin_callback_handler(query: types.CallbackQuery) -> None:
@@ -492,6 +484,29 @@ async def back_callback_handler(query: types.CallbackQuery) -> None:
             message_id=query.message.message_id,
             reply_markup=get_employees_kb(employees, room_id)
         )
+    elif action == 'room_checklist':
+        room_id = query.data.split(':')[2]
+        checklist = await get_checklist_for_room(room_id)
+
+        await bot.edit_message_text(
+            text='Чек-лист',
+            chat_id=query.message.chat.id,
+            message_id=query.message.message_id,
+            reply_markup=get_room_checklist_for_employee_kb(checklist)
+        )
+
+    elif action == 'user_checklist':
+        room_id = query.data.split(':')[2]
+        employee_id = query.data.split(':')[3]
+        checklist = await get_checklist_for_user(employee_id, room_id)
+
+        await bot.edit_message_text(
+            text='Мой Чек-лист',
+            chat_id=query.message.chat.id,
+            message_id=query.message.message_id,
+            reply_markup=get_room_checklist_for_employee_kb(checklist)
+        )
+
     elif action == 'tariff':
         await bot.edit_message_reply_markup(
             chat_id=query.message.chat.id,
@@ -524,7 +539,7 @@ async def process_employee_removal_confirmation(message: types.Message, state: F
 
     if message.text.strip().lower() == 'уволить':
         await remove_employee(employee_id, room_id)
-        await message.reply(f"Сотрудник {employee_name} уволен!", reply_markup=get_room_admin_kb())
+        await message.reply(f"Сотрудник {employee_name} успешно уволен!", reply_markup=get_room_admin_kb())
         try:
             await bot.send_message(employee_id, text="Вы удалены из комнаты!", reply_markup=get_keyboard())
         except BotBlocked as e:
@@ -532,6 +547,23 @@ async def process_employee_removal_confirmation(message: types.Message, state: F
         await state.finish()
     else:
         await message.reply("Неверное слово! Попробуйте еще раз!")
+
+
+async def task_info_callback_handler(query: types.CallbackQuery) -> None:
+    """
+    Кнопка детали дела
+    """
+    user_id = query.message.chat.id
+
+    task_id = query.data.split(':')[2]
+    task = await get_task(task_id)
+
+    await bot.edit_message_text(
+        text=task[3],
+        chat_id=user_id,
+        message_id=query.message.message_id,
+        reply_markup=get_task_info_kb(task)
+    )
 
 
 async def change_task_status_callback_handler(query: types.CallbackQuery) -> None:
@@ -548,20 +580,22 @@ async def change_task_status_callback_handler(query: types.CallbackQuery) -> Non
         if task_status[0] == '0' or (task_status[0] == '1' and task_status[1] == str(query.message.chat.id)):
             await change_task_status(task_id, user_id)
             checklist = await get_checklist_for_room(room_id)
-            await bot.edit_message_reply_markup(
+            await bot.edit_message_text(
+                text='Чек-лист',
                 chat_id=user_id,
                 message_id=query.message.message_id,
                 reply_markup=get_room_checklist_for_employee_kb(checklist)
             )
 
         else:
-            await bot.answer_callback_query(query.id, text="Эту задачу уже выполнили до вас!", show_alert=True)
+            await bot.answer_callback_query(query.id, text="Эту задачу уже выполнили!", show_alert=True)
 
     elif task_for == "user":
         await change_task_status(task_id, user_id)
         checklist = await get_checklist_for_user(user_id, room_id)
 
-        await bot.edit_message_reply_markup(
+        await bot.edit_message_text(
+            text='Мой Чек-лист',
             chat_id=user_id,
             message_id=query.message.message_id,
             reply_markup=get_my_checklist_for_employee_kb(checklist))
@@ -576,7 +610,7 @@ async def add_task_callback_handler(query: types.CallbackQuery, state: FSMContex
 
     await query.answer()
 
-    await query.message.answer("Введите новое дело", reply_markup=get_cancel_keyboard())
+    await query.message.answer("Введите новое дело!", reply_markup=get_cancel_keyboard())
     await RoomState.InputTask.set()
     if task_for == 'room':
         await state.update_data(task_for=task_for, room_id=room_id)
@@ -722,12 +756,8 @@ async def error_handler(update, exception):
     logging.exception(f"Error in update {update}: {exception}")
     return True
 
-async def restart(message: types.Message, state: FSMContext):
-    await state.finish()
-    await message.answer('Бот перезапущен.\nВведите /start для продолжения')
 
 def register_handlers(dp: Dispatcher) -> None:
-    dp.register_message_handler(restart, lambda message: message.text == "restart")
     dp.register_message_handler(btn_cancel, lambda message: message.text == "Отмена", state='*')
     dp.register_message_handler(btn_exit, lambda message: message.text == "Выход")
     dp.register_message_handler(exit_confirmation, state=[RoomState.ExitEmployee, RoomState.ExitAdmin])
@@ -749,10 +779,11 @@ def register_handlers(dp: Dispatcher) -> None:
     dp.register_message_handler(btn_my_subscription, lambda message: message.text == "Моя подписка")
     dp.register_message_handler(btn_checklist, lambda message: message.text == "Чек-лист")
     dp.register_message_handler(btn_my_checklist, lambda message: message.text == "Мой Чек-лист")
-    dp.register_callback_query_handler(employee_checklist_for_admin_callback_handler, text_contains='checklist')
+    dp.register_callback_query_handler(employee_checklist_for_admin_callback_handler, lambda c: c.data.startswith('checklist'))
     dp.register_callback_query_handler(back_callback_handler, text_contains='back')
     dp.register_callback_query_handler(delete_employee_for_admin_callback_handler, text_contains='delete_employee')
     dp.register_message_handler(process_employee_removal_confirmation, state=RoomState.DeleteEmployee)
+    dp.register_callback_query_handler(task_info_callback_handler, text_contains='task_info')
     dp.register_callback_query_handler(change_task_status_callback_handler, text_contains='task_status')
     dp.register_callback_query_handler(add_task_callback_handler, text_contains='add_task')
     dp.register_message_handler(process_input_task, state=RoomState.InputTask)
