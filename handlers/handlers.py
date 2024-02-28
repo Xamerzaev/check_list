@@ -131,7 +131,7 @@ async def cmd_help(message: types.Message) -> None:
     """
     Обработчик кнопки `Помощь`
     """
-    await message.reply(HELP_MESSAGE)
+    await message.reply(HELP_MESSAGE.format(name=USER_NAME_ADMIN))
 
 
 async def btn_create_company(message: types.Message) -> None:
