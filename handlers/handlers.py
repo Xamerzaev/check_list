@@ -387,6 +387,7 @@ async def btn_my_subscription(message: types.Message) -> None:
     user_id = message.from_user.id
     admin_status = await get_admin_activity(user_id)
     if admin_status:
+        room_id = await get_room_id(message.from_user.id)
         end_date = await get_current_end_date(user_id)
         status_check = await get_status_check(user_id)
         found_key = next((key for key, value in TARIFFS.items() if value[-1] == status_check), None)
@@ -400,7 +401,7 @@ async def btn_my_subscription(message: types.Message) -> None:
         else:
             await bot.send_message(
                 user_id,
-                text=f"Вы находитель в тестовом режиме с возможностью добавления 1го сотрудника\n\nВы также можете сменить подписку:",
+                text=f"ID вашей комнаты: {room_id}\n\n Вы находитель в тестовом режиме с возможностью добавления одного сотрудника\n\nВы также можете сменить подписку:",
                 reply_markup=get_pay_kb(user_id))
 
 
