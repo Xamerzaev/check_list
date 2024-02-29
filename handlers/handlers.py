@@ -377,7 +377,9 @@ async def btn_my_employees(message: types.Message) -> None:
                 reply_markup=get_employees_kb(employees, room_id))
         else:
             await bot.send_message(message.from_user.id,
-                                   text="У вас нет сотрудников")
+                                   text="В вашей команде еще нет участников. Чтобы пригласить их присоединиться, пожалуйста, отправьте им ID вашей комнаты и попросите войти в компанию через главное меню.")
+            with open('invite_room.png', 'rb') as photo:
+                await bot.send_photo(message.from_user.id, photo)
 
 
 async def btn_my_subscription(message: types.Message) -> None:
