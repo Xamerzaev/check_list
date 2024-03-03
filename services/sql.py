@@ -155,6 +155,16 @@ async def update_profile_status(user_id, status_check):
         logger.error(f"Error updating profile status for user_id {user_id}: {e}")
 
 
+async def get_user_info_from_db(user_id):
+    try:
+        async with aiosqlite.connect('users.db') as db:
+            cursor = await db.execute("""
+            SELECT * FROM profile WHERE user_id = ?
+            """, (user_id,))
+        return await cursor.fetchall()
+    except Exception as e:
+        logger.error(f"Database error in get_user_info_from_db: {e}")
+
 async def get_status_check(user_id):
     try:
         async with aiosqlite.connect('users.db') as db:

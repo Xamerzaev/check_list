@@ -25,7 +25,7 @@ from services.sql import (
     get_employee_activity, get_room_id_by_employee_id, change_task_status,
     get_current_end_date, remove_employee, get_room_task_status,
     get_employee_name, count_employees_in_room,
-    get_status_check, get_task
+    get_status_check, get_task, get_user_info_from_db
 )
 from keyboards.reply_keyboards import (
     get_keyboard, get_cancel_keyboard,
@@ -419,7 +419,7 @@ async def btn_checklist(message: types.Message) -> None:
         checklist = await get_checklist_for_room(room_id)
         await bot.send_message(
             message.from_user.id,
-            text="Чек-лист",
+            text="Общий Чек-лист",
             reply_markup=get_room_checklist_for_admin_kb(checklist, room_id))
 
     elif employee_status:
@@ -428,12 +428,12 @@ async def btn_checklist(message: types.Message) -> None:
         if checklist:
             await bot.send_message(
                 message.from_user.id,
-                text="Чек-лист",
+                text="Общий Чек-лист",
                 reply_markup=get_room_checklist_for_employee_kb(checklist))
         else:
             await bot.send_message(
                 message.from_user.id,
-                text="Чек-лист пуст", )
+                text="Общий Чек-лист пуст", )
 
 
 async def btn_my_checklist(message: types.Message) -> None:
@@ -691,12 +691,15 @@ async def handle_subscribe_callback(query: types.CallbackQuery) -> None:
     user_id = query.data.split(':')[4]
     room_id = await get_room_id(user_id)
     current_count_employees = await count_employees_in_room(room_id)
+    user_info = await get_user_info_from_db(user_id)
+    if user_info:
+        _, _, _, _, _, phone = user_info[0]
     if count_employee == 'Безлимит' or int(current_count_employees) <= int(count_employee):
         await order(query.message,
                     bot,
                     f'Подписка на {action}(Сотрудников: {count_employee})',
                     f'Оформление подписки на {action}',
-                    int(price) * 100)
+                    int(price) * 100, phone)
         await query.answer(f"Вы выбрали: {action}")
     else:
         await bot.answer_callback_query(query.id,
