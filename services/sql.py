@@ -164,6 +164,7 @@ async def get_user_info_from_db(user_id):
             SELECT * FROM profile WHERE user_id = ?
             """, (user_id,))
             logger.info("Fetching results...")
+            print(cursor)
         return await cursor.fetchall()
     except Exception as e:
         logger.error(f"Database error in get_user_info_from_db: {e}")
