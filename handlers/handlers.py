@@ -693,7 +693,7 @@ async def handle_subscribe_callback(query: types.CallbackQuery) -> None:
     current_count_employees = await count_employees_in_room(room_id)
     user_info = await get_user_info_from_db(user_id)
     if user_info:
-        _, _, _, _, _, phone = user_info[0]
+        phone = user_info[0][2]
     if count_employee == 'Безлимит' or int(current_count_employees) <= int(count_employee):
         await order(query.message,
                     bot,
