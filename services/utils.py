@@ -8,9 +8,10 @@ from aiogram import types
 from loader import bot, dp
 from config import MODERATOR, TARIFFS
 from keyboards.inline_keyboards import get_inline_keyboard, get_join_room_request_kb, get_pay_kb
-from services.sql import get_pending_profiles, update_profile_status, count_employees_in_room, get_status_check, \
-    get_employees
-
+from services.sql import (get_pending_profiles, update_profile_status,
+                          count_employees_in_room, get_status_check,
+                          get_employees)
+from handlers.messages import LIMIT_EMPLOYEES_MESSAGE
 
 async def start_moderation() -> None:
     """
@@ -66,6 +67,7 @@ async def send_request_entry_to_room(user_id, employee_name, owner_id, room_id) 
             logging.info(f'{user_id}: {e}')
 
     elif 41 <= status_check <= 64:
+        found = False
         for tariff in TARIFFS.values():
             if tariff[2] == status_check and count_employees < tariff[0]:
                 try:
@@ -74,15 +76,24 @@ async def send_request_entry_to_room(user_id, employee_name, owner_id, room_id) 
                         text=f'Пользователь {employee_name} хочет присоединиться в вашу комнату',
                         reply_markup=get_join_room_request_kb(user_id, room_id, employee_name)
                     )
+                    found = True
+                    break
                 except BotBlocked as e:
                     logging.info(f'{user_id}: {e}')
+        if not found:
+            try:
+                await bot.send_message(
+                    owner_id,
+                    text=LIMIT_EMPLOYEES_MESSAGE.format(name=employee_name),
+                    reply_markup=get_pay_kb(owner_id)
+                )
+            except BotBlocked as e:
+                logging.info(f'{user_id}: {e}')
     else:
         try:
             await bot.send_message(
                 owner_id,
-                text=f'Пользователь {employee_name} хочет присоединиться в вашу комнату!\n'
-                     f'Вы не можете принять либо отклонить, так как у вас превышен лимит сотрудников!\n'
-                     f'Вы можете улучшить подписку и попросить повторить попытку сотрудника.',
+                text=LIMIT_EMPLOYEES_MESSAGE.format(name=employee_name),
                 reply_markup=get_pay_kb(owner_id)
             )
         except BotBlocked as e:

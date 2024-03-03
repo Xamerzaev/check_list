@@ -101,7 +101,6 @@ async def draw_bar_for_employees(employees_data, room_id):
     total_tasks = [int(employees_data[i][1]) + int(employees_data[i][2]) for i in employees_data]
     completed_tasks = [employees_data[i][1] for i in employees_data]
 
-    print(employees,total_tasks,completed_tasks)
     plt.figure(figsize=(10, 6))
     plt.bar(employees, total_tasks, color='skyblue', label='Всего дел')
     plt.bar(employees, completed_tasks, color='orange', label='Выполнено дел')
