@@ -9,13 +9,13 @@ PROVIDER_TOKEN = getenv("PROVIDER_TOKEN")
 
 
 async def order(message: Message, bot: Bot, title: str,
-                description: str, amount: int, phone_number:str):
+                description: str, amount: int, phone:str):
 
     prices = [LabeledPrice(label=description, amount=amount)]
     amount_str = str(amount / 100)
     provider_data = {
         "receipt": {
-            "phone_number": phone_number,
+            "phone_number": phone,
             "items": [{
                 "description": "Subscribe",
                 "quantity": "1.00",
